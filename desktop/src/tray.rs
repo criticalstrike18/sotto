@@ -255,7 +255,10 @@ pub struct SystemTray;
 
 #[cfg(not(target_os = "windows"))]
 impl SystemTray {
-    pub fn new<F>(_action_handler: F) -> Result<Self, String> {
+    pub fn new<F>(_action_handler: F) -> Result<Self, String>
+    where
+        F: FnMut(TrayAction) + 'static,
+    {
         Ok(Self)
     }
 }

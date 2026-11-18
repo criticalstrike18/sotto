@@ -4272,7 +4272,7 @@ fn main() -> Result<(), slint::PlatformError> {
 
         // 5. Native System Tray Daemon (Step 3.2)
         println!("\n[5/5] Testing Native Win32 System Tray Daemon (Step 3.2)...");
-        match tray::SystemTray::new(|_| {}) {
+        match tray::SystemTray::new(|_: tray::TrayAction| {}) {
             Ok(_) => {
                 println!("  [PASS] Shell_NotifyIconW & tray message loop initialized");
             }
