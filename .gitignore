@@ -1,0 +1,35 @@
+# Rust
+target/
+**/target/
+**/*.rs.bk
+
+# Node & Playwright
+node_modules/
+**/node_modules/
+test-results/
+**/test-results/
+playwright-report/
+**/playwright-report/
+.playwright/
+
+# Reference, Upstream Clones & Design Previews
+whisper-flow-designs/
+floem-experimental/
+
+# Internal Planning & Specs
+steps.md
+idea.md
+codebase_architecture_guide.html
+integration_test_out.txt
+
+# Logs & Screen captures
+*.log
+**/*.log
+desktop-screen.png
+take_screenshot.ps1
+/studio_*.bmp
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini

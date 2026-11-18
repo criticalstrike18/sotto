@@ -1,0 +1,74 @@
+// Copyright (c) 2026 Sotto
+// Model option row: radio dot + model id. Selection state is owned by the
+// parent (unidirectional flow); the row only emits intent via choose().
+// Test contract: dot-cy == 20 (dot optically centered in the 40px row).
+import { Theme } from "theme.slint";
+
+export component ModelRow inherits Rectangle {
+    in property <string> name: "";
+    in property <bool> selected: false;
+
+    out property <length> dot-cy: dot.y + dot.height / 2;
+    out property <length> row-h: self.height;
+
+    callback clicked();
+    public function choose() {
+        root.clicked();
+    }
+
+    height: 40px;
+    border-radius: Theme.radius-md;
+    background: root.selected ? Theme.selected-bg : Theme.sunken-bg;
+    border-width: 1px;
+    border-color: root.selected ? Theme.accent : Theme.line;
+    animate background { duration: 120ms; }
+    animate border-color { duration: 120ms; }
+
+    HorizontalLayout {
+        padding-left: Theme.space-16;
+        padding-right: Theme.space-16;
+        spacing: Theme.space-12;
+        alignment: start;
+
+        VerticalLayout {
+            alignment: center;
+            width: 16px;
+
+            dot := Rectangle {
+                width: 16px;
+                height: 16px;
+                border-radius: Theme.radius-lg;
+                background: root.selected ? Theme.accent-deep : Theme.line;
+                border-width: 1px;
+                border-color: root.selected ? Theme.accent : Theme.line-strong;
+
+                if root.selected : Rectangle {
+                    width: 6px;
+                    height: 6px;
+                    border-radius: 3px;
+                    background: Theme.ink-primary;
+                    x: (parent.width - self.width) / 2;
+                    y: (parent.height - self.height) / 2;
+                }
+            }
+        }
+
+        VerticalLayout {
+            alignment: center;
+
+            Text {
+                text: root.name;
+                font-size: Theme.type-title.size;
+                font-weight: 500;
+                color: root.selected ? Theme.ink-primary : Theme.ink-alt;
+                vertical-alignment: center;
+            }
+        }
+    }
+
+    row-touch := TouchArea {
+        clicked => {
+            root.choose();
+        }
+    }
+}

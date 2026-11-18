@@ -1,0 +1,80 @@
+// Copyright (c) 2026 Sotto
+// Interactive Info Tooltip component: Sleek circular info button with
+// high-contrast hover tooltip popover that appears on hover and disappears on unhover.
+import { Theme } from "theme.slint";
+
+export component InfoTooltip inherits Rectangle {
+    in property <string> tip: "";
+    in property <length> tip-width: 280px;
+    in property <bool> align-right: false;
+
+    out property <bool> is-open: touch.has-hover;
+
+    width: 18px;
+    height: 18px;
+    background: transparent;
+
+    icon-box := Rectangle {
+        width: 18px;
+        height: 18px;
+        border-radius: Theme.radius-pill;
+        background: touch.has-hover ? Theme.selected-bg : Theme.chrome-bg;
+        border-width: 1px;
+        border-color: touch.has-hover ? Theme.accent : Theme.line;
+        animate background { duration: 120ms; }
+        animate border-color { duration: 120ms; }
+
+        Text {
+            text: "i";
+            font-size: Theme.type-caption.size;
+            font-weight: 700;
+            font-family: Theme.font-mono;
+            color: touch.has-hover ? Theme.accent : Theme.ink-secondary;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+        }
+
+        touch := TouchArea {
+            width: 100%;
+            height: 100%;
+            changed has-hover => {
+                if self.has-hover {
+                    popup.show();
+                } else {
+                    popup.close();
+                }
+            }
+        }
+    }
+
+    popup := PopupWindow {
+        x: root.align-right ? (18px - root.tip-width) : (- (root.tip-width / 2) + 9px);
+        y: 24px;
+        width: root.tip-width;
+
+        tooltip-bubble := Rectangle {
+            width: root.tip-width;
+            background: Theme.card-bg;
+            border-radius: Theme.radius-md;
+            border-width: 1px;
+            border-color: Theme.line-strong;
+            drop-shadow-blur: 16px;
+            drop-shadow-color: #00000066;
+
+            VerticalLayout {
+                padding-left: Theme.space-12;
+                padding-right: Theme.space-12;
+                padding-top: Theme.space-12;
+                padding-bottom: Theme.space-12;
+
+                Text {
+                    text: root.tip;
+                    font-size: Theme.type-caption.size;
+                    font-weight: 500;
+                    color: Theme.ink-primary;
+                    wrap: word-wrap;
+                }
+            }
+        }
+    }
+}

@@ -1,0 +1,62 @@
+// Copyright (c) 2026 Sotto
+// Segmented 3-tab capsule bar. Routing goes through pick-tab() so tests can
+// invoke the Slint-side path headlessly (TouchArea clicks need an event loop).
+// Test contract: pick-tab(i) fires select-tab(i); bar-h stays 36.
+import { Theme } from "theme.slint";
+
+export component TabBar inherits Rectangle {
+    in property <[string]> labels: ["Dictations", "Providers", "Customization"];
+    in-out property <int> active-tab: 0;
+
+    out property <length> bar-h: self.height;
+
+    callback select-tab(int);
+    public function pick-tab(index: int) {
+        root.select-tab(index);
+    }
+
+    height: 36px;
+    width: 410px;
+    background: Theme.chrome-bg;
+    border-radius: Theme.radius-pill;
+    border-width: 1px;
+    border-color: Theme.line;
+
+    HorizontalLayout {
+        padding: Theme.space-2;
+        spacing: Theme.space-2;
+
+        for label[i] in root.labels : Rectangle {
+            background: root.active-tab == i ? Theme.line : transparent;
+            border-radius: Theme.radius-pill;
+
+            // Inset highlight when active
+            if root.active-tab == i : Rectangle {
+                y: 1px;
+                x: 8px;
+                width: parent.width - 16px;
+                height: 1px;
+                background: Theme.white;
+                opacity: 0.08;
+            }
+
+            VerticalLayout {
+                alignment: center;
+                Text {
+                    text: label;
+                    font-size: Theme.type-label.size;
+                    font-weight: root.active-tab == i ? 600 : 500;
+                    color: root.active-tab == i ? Theme.ink-primary : Theme.ink-secondary;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+            }
+
+            tab-touch := TouchArea {
+                clicked => {
+                    root.pick-tab(i);
+                }
+            }
+        }
+    }
+}

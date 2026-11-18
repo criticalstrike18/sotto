@@ -1,0 +1,30 @@
+// Copyright (c) 2026 Sotto
+// Section header: monospace eyebrow title + muted subtitle.
+// Test contract: total-h is stable under long/empty strings (wraps wide,
+// never grows tall unexpectedly).
+import { Theme } from "theme.slint";
+
+export component SectionHeader inherits VerticalLayout {
+    in property <string> title: "";
+    in property <string> subtitle: "";
+
+    out property <length> total-h: self.height;
+
+    spacing: Theme.space-4;
+
+    Text {
+        text: root.title;
+        font-size: Theme.type-eyebrow.size;
+        font-weight: Theme.type-eyebrow.weight;
+        color: Theme.ink-secondary;
+        font-family: Theme.font-mono;
+        letter-spacing: 0.5px;
+    }
+
+    Text {
+        text: root.subtitle;
+        font-size: Theme.type-label.size;
+        font-weight: Theme.type-label.weight;
+        color: Theme.ink-secondary;
+    }
+}

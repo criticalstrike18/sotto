@@ -1,0 +1,204 @@
+// Copyright (c) 2026 Sotto
+// Dictation history card: app badge + timestamp + duration + copy button over
+// the transcript body. Record flows in, copy intent flows out via press-copy()
+// so tests invoke the Slint path headlessly.
+// Test contract (see tests/ui_components.rs):
+//   - header-h == 26 (copy button defines the header height)
+//   - badge-y == (header-h - 24) / 2 (24px badge optically centered)
+import { Theme } from "theme.slint";
+//   - copy-right <= header-w (button never overflows)
+//   - card-h grows with transcript length; icon/no-icon variants match
+
+export component HistoryCard inherits Rectangle {
+    in property <int> rec-id: 0;
+    in property <string> rec-timestamp: "";
+    in property <string> rec-transcript: "";
+    in property <int> rec-duration-ms: 0;
+    in property <string> rec-duration-str: "";
+    in property <string> rec-target-app: "";
+    in property <image> rec-app-icon;
+    in property <bool> rec-has-icon: false;
+    in property <int> copied-id: -1;
+
+    out property <length> header-h: header-row.height;
+    out property <length> header-w: header-row.width;
+    out property <length> badge-y: app-badge.y;
+    out property <length> badge-h: app-badge.height;
+    out property <length> copy-y: copy-btn.y;
+    out property <length> copy-h: copy-btn.height;
+    out property <length> copy-right: copy-btn.x + copy-btn.width;
+    out property <length> card-w: self.width;
+    out property <length> card-h: self.height;
+    out property <length> content-h: body-col.height;
+
+    callback copy-item(int, string);
+    public function press-copy() {
+        root.copy-item(root.rec-id, root.rec-transcript);
+    }
+
+    // Shadcn Zinc Card with Subtle Inset Sheen
+    background: Theme.card-bg;
+    border-radius: Theme.radius-lg;
+    border-width: 1px;
+    border-color: Theme.line;
+
+    // Specular Top Sheen
+    Rectangle {
+        y: 1px;
+        x: 10px;
+        width: parent.width - 20px;
+        height: 1px;
+        background: Theme.white;
+        opacity: 0.04;
+    }
+
+    body-col := VerticalLayout {
+        padding-left: Theme.space-16;
+        padding-right: Theme.space-16;
+        padding-top: Theme.space-12;
+        padding-bottom: Theme.space-12;
+        spacing: Theme.space-8;
+
+        // Metadata Header Row
+        header-row := HorizontalLayout {
+            alignment: space-between;
+
+            HorizontalLayout {
+                spacing: Theme.space-8;
+                alignment: start;
+
+                // Target App Badge (wrapped for optical centering: fixed-size
+                // children of a HorizontalLayout top-align by default)
+                VerticalLayout {
+                    alignment: center;
+
+                    // Target App Badge
+                    app-badge := Rectangle {
+                    background: Theme.chrome-bg;
+                    border-radius: Theme.radius-md;
+                    border-width: 1px;
+                    border-color: Theme.line;
+                    height: 24px;
+
+                    HorizontalLayout {
+                        padding-left: Theme.space-8;
+                        padding-right: Theme.space-8;
+                        spacing: Theme.space-4;
+                        alignment: start;
+
+                        // Centered icon container
+                        Rectangle {
+                            width: 16px;
+                            height: 16px;
+                            y: (parent.height - self.height) / 2;
+
+                            if rec-has-icon : Image {
+                                source: rec-app-icon;
+                                width: 16px;
+                                height: 16px;
+                                image-fit: contain;
+                            }
+
+                            if !rec-has-icon : Rectangle {
+                                width: 16px;
+                                height: 16px;
+                                border-radius: Theme.radius-sm;
+                                background: Theme.chrome-bg;
+
+                                Rectangle {
+                                    width: 6px;
+                                    height: 6px;
+                                    border-radius: 3px;
+                                    background: Theme.ink-muted;
+                                    x: (parent.width - self.width) / 2;
+                                    y: (parent.height - self.height) / 2;
+                                }
+                            }
+                        }
+
+                        // App Name
+                        Text {
+                            text: rec-target-app != "" ? rec-target-app : "Desktop";
+                            font-size: Theme.type-label.size;
+                            font-weight: 600;
+                            color: Theme.ink-primary;
+                            vertical-alignment: center;
+                        }
+                    }
+                }
+                }
+
+                // Timestamp
+                Text {
+                    text: rec-timestamp;
+                    font-size: Theme.type-label.size;
+                    color: Theme.ink-secondary;
+                    font-family: Theme.font-mono;
+                    vertical-alignment: center;
+                }
+
+                // Duration Pill (wrapped for optical centering, like the badge)
+                VerticalLayout {
+                    alignment: center;
+
+                // Duration Pill
+                Rectangle {
+                    height: 22px;
+                    border-radius: Theme.radius-sm;
+                    background: Theme.chrome-bg;
+                    border-width: 1px;
+                    border-color: Theme.line;
+
+                    HorizontalLayout {
+                        padding-left: Theme.space-4;
+                        padding-right: Theme.space-4;
+                        alignment: center;
+
+                        Text {
+                            text: "⏱ " + rec-duration-str;
+                            font-size: Theme.type-label.size;
+                            color: Theme.ink-secondary;
+                            font-family: Theme.font-mono;
+                            vertical-alignment: center;
+                        }
+                    }
+                }
+                }
+            }
+
+            // Copy Button (shadcn Ghost Pill)
+            copy-btn := Rectangle {
+                width: 76px;
+                height: 26px;
+                border-radius: Theme.radius-md;
+                background: root.copied-id == root.rec-id ? Theme.success-dim : (copy-touch.has-hover ? Theme.line : Theme.chrome-bg);
+                border-width: 1px;
+                border-color: root.copied-id == root.rec-id ? Theme.success-deep : (copy-touch.has-hover ? Theme.line-strong : Theme.line);
+
+                Text {
+                    text: root.copied-id == root.rec-id ? "✓ Copied" : "⧉ Copy";
+                    font-size: Theme.type-label.size;
+                    font-weight: 500;
+                    color: root.copied-id == root.rec-id ? Theme.success : (copy-touch.has-hover ? Theme.white : Theme.ink-secondary);
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+
+                copy-touch := TouchArea {
+                    clicked => {
+                        root.press-copy();
+                    }
+                }
+            }
+        }
+
+        // Transcript Body - Crisp 14px DM Sans Typography
+        Text {
+            text: rec-transcript;
+            font-size: Theme.type-body.size;
+            font-weight: Theme.type-body.weight;
+            color: Theme.ink-primary;
+            wrap: word-wrap;
+        }
+    }
+}

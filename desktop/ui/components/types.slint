@@ -1,0 +1,27 @@
+// Copyright (c) 2026 Sotto
+// Shared Slint types. Single definition imported by hud.slint and components
+// so the generated Rust type (`sotto_desktop::HistoryItem`) has one source.
+
+export struct HistoryItem {
+    id: int,
+    timestamp-str: string,
+    transcript: string,
+    duration-ms: int,
+    duration-str: string,
+    target-app: string,
+    app-icon: image,
+    has-icon: bool,
+}
+
+export struct LanguageItem {
+    code: string,
+    name: string,
+}
+
+export struct ApiKeyItem {
+    id: int,
+    key: string,
+    masked: string,
+    status: string,
+    is-rate-limited: bool,
+}

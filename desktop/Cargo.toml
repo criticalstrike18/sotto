@@ -1,0 +1,60 @@
+[package]
+name = "sotto-desktop"
+version = "0.1.0"
+edition = "2021"
+description = "Sotto: Ultra-fast, zero-friction voice dictation & HUD built with Rust and Slint"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/criticalstrike18/sotto"
+readme = "../README.md"
+
+[lib]
+name = "sotto_desktop"
+path = "src/lib.rs"
+
+[[bin]]
+name = "sotto-windows"
+path = "src/main.rs"
+
+[dependencies]
+cpal = "0.15"
+slint = { version = "1.9", features = ["raw-window-handle-06"] }
+reqwest = { version = "0.12", default-features = false, features = ["multipart", "json", "rustls-tls", "http2"] }
+tokio = { version = "1", default-features = false, features = ["rt", "rt-multi-thread", "time"] }
+serde = { version = "1.0", default-features = false, features = ["derive", "alloc"] }
+serde_json = "1.0"
+rusqlite = { version = "0.32", features = ["bundled"] }
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+regex = "1.11"
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows-sys = { version = "0.60", features = [
+    "Win32_Foundation",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_System_Threading",
+    "Win32_UI_Shell",
+    "Win32_System_Com",
+    "Win32_Graphics_Gdi",
+    "Win32_Graphics_Dwm",
+    "Win32_System_Diagnostics_ToolHelp",
+    "Win32_UI_HiDpi",
+    "Win32_UI_Input_Touch",
+    "Win32_System_DataExchange",
+    "Win32_System_Memory",
+    "Win32_System_Registry",
+    "Win32_Media_Audio"
+] }
+windows = { version = "0.62", features = ["Media_Control"] }
+raw-window-handle = "0.6"
+
+[build-dependencies]
+slint-build = "1.9"
+
+[dev-dependencies]
+i-slint-backend-testing = "1.18"
+
+[profile.dev]
+debug = 1
+
+[profile.test]
+debug = 1

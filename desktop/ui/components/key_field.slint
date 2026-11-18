@@ -1,0 +1,138 @@
+// Copyright (c) 2026 Sotto
+// API key field: eyebrow label + masked input + Show/Hide + console link.
+import { Theme } from "theme.slint";
+
+// Text is two-way bound to the parent's key prop; visibility is parent-owned
+// state flipped through toggle-visible(). Link opens through open-site().
+// Test contract: box-h == 36, btn-w == 76; reveal()/open-link() fire callbacks.
+
+export component KeyField inherits VerticalLayout {
+    in property <string> label: "";
+    in property <string> placeholder: "";
+    in-out property <string> text: "";
+    in property <bool> text-visible: false;
+    in property <string> console-label: "";
+
+    out property <length> box-h: key-box.height;
+    out property <length> btn-w: show-btn.width;
+
+    callback toggle-visible();
+    callback open-site();
+
+    public function reveal() {
+        root.toggle-visible();
+    }
+
+    public function open-link() {
+        root.open-site();
+    }
+
+    spacing: Theme.space-8;
+
+    Text {
+        text: root.label;
+        font-size: Theme.type-eyebrow.size;
+        font-weight: 600;
+        color: Theme.ink-secondary;
+        font-family: Theme.font-mono;
+        letter-spacing: 0.5px;
+    }
+
+    HorizontalLayout {
+        spacing: Theme.space-8;
+
+        key-box := Rectangle {
+            horizontal-stretch: 1;
+            height: 36px;
+            border-radius: Theme.radius-md;
+            background: Theme.input-bg;
+            border-width: 1px;
+            border-color: input.has-focus ? Theme.accent : Theme.line;
+            animate border-color { duration: 120ms; }
+
+            // Placeholder when empty
+            if root.text == "" : Text {
+                x: Theme.space-12;
+                width: parent.width - Theme.space-24;
+                height: 100%;
+                text: root.placeholder;
+                font-size: Theme.type-body.size;
+                color: Theme.ink-muted;
+                vertical-alignment: center;
+            }
+
+            input := TextInput {
+                x: Theme.space-12;
+                width: parent.width - Theme.space-24;
+                height: 100%;
+                text <=> root.text;
+                input-type: root.text-visible ? InputType.text : InputType.password;
+                font-size: Theme.type-body.size;
+                font-family: root.text-visible ? Theme.font-mono : "";
+                color: Theme.ink-primary;
+                selection-background-color: Theme.accent;
+                selection-foreground-color: Theme.white;
+                vertical-alignment: center;
+                single-line: true;
+            }
+        }
+
+        show-btn := Rectangle {
+            width: 76px;
+            height: 36px;
+            border-radius: Theme.radius-md;
+            background: eye-touch.has-hover ? Theme.line : Theme.chrome-bg;
+            border-width: 1px;
+            border-color: eye-touch.has-hover ? Theme.line-strong : Theme.line;
+            animate background { duration: 120ms; }
+            animate border-color { duration: 120ms; }
+
+            Text {
+                text: root.text-visible ? "Hide" : "Show";
+                font-size: Theme.type-label.size;
+                font-weight: 500;
+                color: eye-touch.has-hover ? Theme.ink-primary : Theme.ink-secondary;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+
+            eye-touch := TouchArea {
+                clicked => {
+                    root.reveal();
+                }
+            }
+        }
+    }
+
+    Rectangle {
+        height: 22px;
+
+        HorizontalLayout {
+            spacing: Theme.space-4;
+            alignment: start;
+
+            Text {
+                text: "No key yet? Get one at";
+                font-size: Theme.type-label.size;
+                color: Theme.ink-muted;
+                vertical-alignment: center;
+            }
+
+            Text {
+                text: root.console-label;
+                font-size: Theme.type-label.size;
+                font-weight: 500;
+                color: Theme.accent;
+                vertical-alignment: center;
+            }
+        }
+
+        link-touch := TouchArea {
+            width: parent.width;
+            height: parent.height;
+            clicked => {
+                root.open-link();
+            }
+        }
+    }
+}

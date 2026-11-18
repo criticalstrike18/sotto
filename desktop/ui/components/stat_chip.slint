@@ -1,0 +1,49 @@
+// Copyright (c) 2026 Sotto
+// Telemetry chip: icon glyph + label sharing one baseline inside a 26px pill.
+// Test contract (see tests/ui_components.rs):
+//   - icon-y == label-y and icon-h == label-h (emoji-baseline fix)
+//   - icon-cy == label-cy == 13 (vertically centered in the pill)
+//   - chip-h stays 26 under stress strings (grows wide, never tall)
+import { Theme } from "theme.slint";
+
+export component StatChip inherits Rectangle {
+    in property <string> icon: "";
+    in property <string> label: "";
+    in property <bool> accent: false;
+    in property <length> chip-height: 26px;
+
+    out property <length> icon-y: icon-text.y;
+    out property <length> icon-h: icon-text.height;
+    out property <length> label-y: label-text.y;
+    out property <length> label-h: label-text.height;
+    out property <length> chip-h: self.height;
+    out property <length> chip-w: self.width;
+    out property <length> row-w: chip-row.width;
+
+    height: root.chip-height;
+    border-radius: Theme.radius-pill;
+    background: Theme.chrome-bg;
+    border-width: 1px;
+    border-color: Theme.line;
+
+    chip-row := HorizontalLayout {
+        alignment: center;
+        padding-left: Theme.space-8;
+        padding-right: Theme.space-8;
+        spacing: Theme.space-4;
+
+        icon-text := Text {
+            text: root.icon;
+            font-size: Theme.type-label.size;
+            vertical-alignment: center;
+        }
+
+        label-text := Text {
+            text: root.label;
+            font-size: Theme.type-label.size;
+            font-weight: root.accent ? 600 : 500;
+            color: root.accent ? Theme.ink-primary : Theme.ink-secondary;
+            vertical-alignment: center;
+        }
+    }
+}

@@ -1,0 +1,67 @@
+// Copyright (c) 2026 Sotto
+// Provider selection card: brand logo + optional name, blue border when active.
+// Interaction routes through press() so tests invoke the Slint path headlessly.
+// Test contract: logo-cy == card-h / 2 (logo optically centered); card-h == 60.
+import { Theme } from "theme.slint";
+
+export component ProviderCard inherits Rectangle {
+    in property <image> logo;
+    in property <int> logo-w: 20;
+    in property <int> logo-h: 20;
+    in property <string> title: "";
+    in property <bool> selected: false;
+
+    out property <length> logo-cy: logo-img.y + logo-img.height / 2;
+    out property <length> row-cy: logo-row.y + logo-row.height / 2;
+    out property <length> card-h: self.height;
+
+    callback clicked();
+    public function press() {
+        root.clicked();
+    }
+
+    height: 60px;
+    border-radius: Theme.radius-lg;
+    background: root.selected ? Theme.selected-bg : (card-touch.has-hover ? Theme.chrome-bg : Theme.sunken-bg);
+    border-width: 1px;
+    border-color: root.selected ? Theme.accent : Theme.line;
+    animate background { duration: 120ms; }
+    animate border-color { duration: 120ms; }
+
+    HorizontalLayout {
+        padding-left: Theme.space-16;
+        padding-right: Theme.space-16;
+        alignment: start;
+
+        VerticalLayout {
+            alignment: center;
+            horizontal-stretch: 1;
+
+            logo-row := HorizontalLayout {
+                spacing: Theme.space-8;
+                alignment: start;
+
+                logo-img := Image {
+                    source: root.logo;
+                    width: root.logo-w * 1px;
+                    height: root.logo-h * 1px;
+                    image-fit: contain;
+                }
+
+                if root.title != "" : Text {
+                    text: root.title;
+                    font-size: Theme.type-title.size;
+                    font-weight: 600;
+                    color: root.selected ? Theme.ink-primary : Theme.ink-alt;
+                    vertical-alignment: center;
+                }
+            }
+        }
+    }
+
+    card-touch := TouchArea {
+        clicked => {
+            root.press();
+        }
+    }
+}

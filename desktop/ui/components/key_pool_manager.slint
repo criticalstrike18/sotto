@@ -1,0 +1,274 @@
+// Copyright (c) 2026 Sotto
+// Multi-Key Pool & Auto-Rotation Manager Component
+import { Theme } from "theme.slint";
+import { ApiKeyItem } from "types.slint";
+
+export component KeyPoolManager inherits VerticalLayout {
+    in property <string> label: "API KEY ROTATION POOL";
+    in property <[ApiKeyItem]> keys: [];
+    in-out property <string> new-key-text: "";
+    in property <string> placeholder: "Paste API key (gsk_... or AIza...) to add to pool";
+    in property <string> console-label: "";
+
+    callback add-key(string);
+    callback remove-key(string);
+    callback open-site();
+
+    spacing: Theme.space-8;
+
+    // Header eyebrow + pool status badge
+    HorizontalLayout {
+        alignment: space-between;
+
+        Text {
+            text: root.label;
+            font-size: Theme.type-eyebrow.size;
+            font-weight: 600;
+            color: Theme.ink-secondary;
+            font-family: Theme.font-mono;
+            letter-spacing: 0.5px;
+            vertical-alignment: center;
+        }
+
+        // Live pool status chip
+        Rectangle {
+            height: 22px;
+            border-radius: Theme.radius-sm;
+            background: root.keys.length > 1 ? Theme.rec-idle-bg : (root.keys.length == 1 ? Theme.sunken-bg : Theme.rec-warn-bg);
+            border-width: 1px;
+            border-color: root.keys.length > 1 ? Theme.success-dim : (root.keys.length == 1 ? Theme.line : Theme.rec-warn-line);
+
+            HorizontalLayout {
+                padding-left: Theme.space-8;
+                padding-right: Theme.space-8;
+                spacing: Theme.space-4;
+                alignment: center;
+
+                Rectangle {
+                    width: 6px;
+                    height: 6px;
+                    border-radius: 3px;
+                    background: root.keys.length > 0 ? Theme.success : Theme.warning;
+                    y: (parent.height - 6px) / 2;
+                }
+
+                Text {
+                    text: root.keys.length > 1 
+                        ? (root.keys.length + " KEYS • AUTO-ROTATING") 
+                        : (root.keys.length == 1 ? "1 KEY ACTIVE" : "NO KEYS IN POOL");
+                    font-size: Theme.type-eyebrow.size;
+                    font-weight: 600;
+                    font-family: Theme.font-mono;
+                    color: root.keys.length > 0 ? Theme.ink-primary : Theme.warning-soft;
+                    vertical-alignment: center;
+                }
+            }
+        }
+    }
+
+    // List of active keys in rotation
+    if root.keys.length > 0 : VerticalLayout {
+        spacing: Theme.space-8;
+
+        for item in root.keys : Rectangle {
+            height: 38px;
+            border-radius: Theme.radius-md;
+            background: Theme.chrome-bg;
+            border-width: 1px;
+            border-color: item.is-rate-limited ? Theme.rec-warn-line : Theme.line;
+            animate border-color { duration: 120ms; }
+
+            HorizontalLayout {
+                padding-left: Theme.space-12;
+                padding-right: Theme.space-8;
+                alignment: space-between;
+
+                HorizontalLayout {
+                    spacing: Theme.space-8;
+                    alignment: start;
+
+                    // Status dot
+                    Rectangle {
+                        width: 8px;
+                        height: 8px;
+                        border-radius: 4px;
+                        background: item.is-rate-limited ? Theme.warning : Theme.success;
+                        y: (parent.height - 8px) / 2;
+                    }
+
+                    // Masked key display
+                    Text {
+                        text: item.masked;
+                        font-family: Theme.font-mono;
+                        font-size: Theme.type-body.size;
+                        color: Theme.ink-primary;
+                        vertical-alignment: center;
+                    }
+
+                    // Cooldown or Ready pill
+                    Rectangle {
+                        height: 20px;
+                        border-radius: Theme.radius-sm;
+                        background: item.is-rate-limited ? Theme.rec-warn-bg : Theme.sunken-bg;
+                        border-width: 1px;
+                        border-color: item.is-rate-limited ? Theme.rec-warn-line : Theme.line;
+                        y: (parent.height - 20px) / 2;
+
+                        HorizontalLayout {
+                            padding-left: Theme.space-4;
+                            padding-right: Theme.space-4;
+                            alignment: center;
+
+                            Text {
+                                text: item.is-rate-limited ? ("COOLDOWN " + item.status) : "ACTIVE";
+                                font-size: Theme.type-eyebrow.size;
+                                font-weight: 600;
+                                font-family: Theme.font-mono;
+                                color: item.is-rate-limited ? Theme.warning-soft : Theme.success;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+                }
+
+                // Delete key button (✕)
+                del-btn := Rectangle {
+                    width: 28px;
+                    height: 28px;
+                    border-radius: Theme.radius-sm;
+                    background: del-touch.has-hover ? Theme.danger-hover : transparent;
+                    border-width: del-touch.has-hover ? 1px : 0px;
+                    border-color: Theme.danger;
+                    y: (parent.height - 28px) / 2;
+                    animate background { duration: 100ms; }
+
+                    Image {
+                        source: @image-url("../../assets/icons/trash.svg");
+                        width: 14px;
+                        height: 14px;
+                        colorize: del-touch.has-hover ? Theme.danger : Theme.ink-muted;
+                        x: (parent.width - self.width) / 2;
+                        y: (parent.height - self.height) / 2;
+                    }
+
+                    del-touch := TouchArea {
+                        clicked => {
+                            root.remove-key(item.key);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Add Key Input Row
+    HorizontalLayout {
+        spacing: Theme.space-8;
+
+        input-box := Rectangle {
+            horizontal-stretch: 1;
+            height: 36px;
+            border-radius: Theme.radius-md;
+            background: Theme.input-bg;
+            border-width: 1px;
+            border-color: text-in.has-focus ? Theme.accent : Theme.line;
+            animate border-color { duration: 120ms; }
+
+            if root.new-key-text == "" : Text {
+                x: Theme.space-12;
+                width: parent.width - Theme.space-24;
+                height: 100%;
+                text: root.placeholder;
+                font-size: Theme.type-body.size;
+                color: Theme.ink-muted;
+                vertical-alignment: center;
+            }
+
+            text-in := TextInput {
+                x: Theme.space-12;
+                width: parent.width - Theme.space-24;
+                height: 100%;
+                text <=> root.new-key-text;
+                font-size: Theme.type-body.size;
+                font-family: Theme.font-mono;
+                color: Theme.ink-primary;
+                selection-background-color: Theme.accent;
+                selection-foreground-color: Theme.white;
+                vertical-alignment: center;
+                single-line: true;
+                accepted => {
+                    if root.new-key-text != "" {
+                        root.add-key(root.new-key-text);
+                        root.new-key-text = "";
+                    }
+                }
+            }
+        }
+
+        add-btn := Rectangle {
+            width: 88px;
+            height: 36px;
+            border-radius: Theme.radius-md;
+            background: add-touch.has-hover ? Theme.action-pressed : Theme.action-bg;
+            border-width: 1px;
+            border-color: Theme.accent-deep;
+            animate background { duration: 120ms; }
+
+            Text {
+                text: "+ Add Key";
+                font-size: Theme.type-label.size;
+                font-weight: 600;
+                color: Theme.white;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+
+            add-touch := TouchArea {
+                clicked => {
+                    if root.new-key-text != "" {
+                        root.add-key(root.new-key-text);
+                        root.new-key-text = "";
+                    }
+                }
+            }
+        }
+    }
+
+    // Explanatory Micro-copy & Quick Link
+    Rectangle {
+        height: 22px;
+
+        HorizontalLayout {
+            spacing: Theme.space-8;
+            alignment: space-between;
+
+            Text {
+                text: root.keys.length > 1 
+                    ? "✓ Multi-key rotation active: auto-balances requests and avoids 429 rate limits." 
+                    : "Tip: Add multiple keys to auto-rotate and beat free-tier rate limits.";
+                font-size: Theme.type-caption.size;
+                color: Theme.ink-muted;
+                vertical-alignment: center;
+            }
+
+            if root.console-label != "" : HorizontalLayout {
+                spacing: Theme.space-4;
+                alignment: end;
+
+                Text {
+                    text: root.console-label;
+                    font-size: Theme.type-caption.size;
+                    font-weight: 500;
+                    color: Theme.accent;
+                    vertical-alignment: center;
+                }
+
+                link-touch := TouchArea {
+                    clicked => {
+                        root.open-site();
+                    }
+                }
+            }
+        }
+    }
+}

@@ -1,0 +1,120 @@
+// Copyright (c) 2026 Sotto
+// Design tokens: the single source of truth for color, spacing, radii, and
+// the text hierarchy. Rule: no raw hex / spacing literals outside this file
+// (shadows with alpha suffixes excepted). Golden snapshots pin every pixel,
+// so any token change is visually reviewed before it lands.
+//
+// Palette base is the Tailwind zinc ramp; semantic aliases say *what it is*.
+
+struct TypeRole {
+    size: length,
+    weight: int,
+    family: string,
+}
+
+export global Theme {
+    // --- Zinc ramp (base, prefer the semantic aliases below) ---
+    out property <color> zinc-50: #fafafa;
+    out property <color> zinc-100: #f4f4f5;
+    out property <color> zinc-200: #e4e4e7;
+    out property <color> zinc-400: #a1a1aa;
+    out property <color> zinc-500: #71717a;
+    out property <color> zinc-600: #52525b;
+    out property <color> zinc-700: #3f3f46;
+    out property <color> zinc-800: #27272a;
+    out property <color> zinc-900: #18181b;
+    out property <color> zinc-950: #09090b;
+    out property <color> white: #ffffff;
+    out property <color> black: #000000;
+
+    // --- Surfaces ---
+    out property <color> card-bg: #121215;
+    out property <color> card-alt: #111215;
+    out property <color> chrome-bg: #18181b;
+    out property <color> sunken-bg: #141416;
+    out property <color> input-bg: #09090b;
+    out property <color> selected-bg: #1c1d22;
+    out property <color> gutter-bg: #101013;
+
+    // --- Lines ---
+    out property <color> line: #27272a;
+    out property <color> line-strong: #3f3f46;
+
+    // --- Text ink ---
+    out property <color> ink-primary: #fafafa;
+    out property <color> ink-secondary: #a1a1aa;
+    out property <color> ink-muted: #71717a;
+    out property <color> ink-faint: #52525b;
+    out property <color> ink-alt: #e4e4e7;
+    out property <color> ink-inverse: #09090b;
+
+    // --- Accents & status ---
+    out property <color> accent: #38bdf8;
+    out property <color> accent-deep: #0284c7;
+    out property <color> accent-soft: #60a5fa;
+    out property <color> success: #4ade80;
+    out property <color> success-deep: #22c55e;
+    out property <color> success-dim: #14532d;
+    out property <color> danger: #ef4444;
+    out property <color> danger-soft: #fca5a5;
+    out property <color> danger-hover: #2e151b;
+    out property <color> danger-pressed: #3f1d24;
+    out property <color> error-soft: #f87171;
+    out property <color> warning: #f59e0b;
+    out property <color> warning-soft: #fbbf24;
+    out property <color> amber-dot: #eab308;
+    out property <color> save-hover: #f4f4f5;
+    out property <color> vignette: #090a0c;
+
+    // --- Button + recording-key state tints (as used, 1:1) ---
+    out property <color> action-bg: #0ea5e9;
+    out property <color> action-pressed: #0369a1;
+    out property <color> rec-arm-bg: #0c4a6e;
+    out property <color> rec-arm-alt: #082f49;
+    out property <color> rec-warn-bg: #451a03;
+    out property <color> rec-idle-bg: #102a1b;
+    out property <color> rec-warn-line: #78350f;
+    out property <color> stage-ink: #353842;
+    out property <color> stage-ide: #0f1013;
+    out property <color> stage-slate: #1e2025;
+
+    // --- Standardized Spacing Scale (Micro 2/4/8/12 & Macro 16/24/32/48) ---
+    out property <length> space-2: 2px;
+    out property <length> space-4: 4px;
+    out property <length> space-8: 8px;
+    out property <length> space-12: 12px;
+    out property <length> space-16: 16px;
+    out property <length> space-24: 24px;
+    out property <length> space-32: 32px;
+    out property <length> space-48: 48px;
+
+    // --- Radii ---
+    out property <length> radius-sm: 4px;
+    out property <length> radius-md: 6px;
+    out property <length> radius-lg: 8px;
+    out property <length> radius-pill: 9999px;
+
+    // --- Type Families ---
+    out property <string> font-mono: "Cascadia Code, Consolas, monospace";
+    out property <string> font-sans: "DM Sans";
+    out property <string> font-serif: "Playfair Display";
+
+    // Text hierarchy (strictly standardized to 28px, 22px, 14px, 12px):
+    // display  - App / Page title (H1)    28 / 700 (Playfair Display)
+    // hero     - Section Header (H2)      22 / 600 (Playfair Display)
+    // body     - Dictation transcripts    14 / 600 (DM Sans)
+    // title    - Card & section titles    14 / 600 (DM Sans)
+    // label    - Buttons, tabs, inputs    12 / 600 (DM Sans)
+    // meta     - Timestamps, durations    12 / 500 mono
+    // eyebrow  - Section headers          12 / 600 mono
+    // caption  - Badges, status, hints    12 / 600 (DM Sans)
+    out property <TypeRole> type-display: { size: 28px, weight: 700, family: "Playfair Display" };
+    out property <TypeRole> type-hero: { size: 22px, weight: 600, family: "Playfair Display" };
+    out property <TypeRole> type-body: { size: 14px, weight: 400, family: "DM Sans" };
+    out property <TypeRole> type-title: { size: 14px, weight: 600, family: "DM Sans" };
+    out property <TypeRole> type-label: { size: 12px, weight: 600, family: "DM Sans" };
+    out property <TypeRole> type-meta: { size: 12px, weight: 500, family: "Cascadia Code, Consolas, monospace" };
+    out property <TypeRole> type-eyebrow: { size: 12px, weight: 600, family: "Cascadia Code, Consolas, monospace" };
+    out property <TypeRole> type-caption: { size: 12px, weight: 600, family: "DM Sans" };
+}
+
