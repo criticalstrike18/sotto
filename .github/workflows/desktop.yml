@@ -10,7 +10,7 @@ name: Sotto Desktop CI & Release
 on:
   push:
     branches: [ "main" ]
-    tags: [ "desktop-v*" ]
+    tags: [ "desktop-v*", "v*" ]
   pull_request:
     branches: [ "main" ]
     paths:
@@ -84,7 +84,7 @@ jobs:
           if-no-files-found: error
 
       - name: Publish GitHub Release (tags only)
-        if: startsWith(github.ref, 'refs/tags/desktop-v*')
+        if: startsWith(github.ref, 'refs/tags/desktop-v*') || startsWith(github.ref, 'refs/tags/v*')
         uses: softprops/action-gh-release@v2
         with:
           files: desktop/target/release/${{ matrix.artifact-name }}
