@@ -29,11 +29,12 @@ regex = "1.11"
 slint = { version = "1.9", features = ["raw-window-handle-06"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
-# Trial Skia + DirectWrite on Windows CI without changing Linux/macOS builds.
+# Trial Skia (OpenGL surface for DWM transparent pill) + DirectWrite on Windows CI without changing Linux/macOS builds.
 slint = { version = "1.9", default-features = false, features = [
     "std",
     "backend-winit",
     "renderer-skia",
+    "renderer-skia-opengl",
     "renderer-software",
     "accessibility",
     "compat-1-2",
