@@ -4175,36 +4175,55 @@ fn main() -> Result<(), slint::PlatformError> {
         studio.window().set_size(slint::PhysicalSize::new(1040, 840));
         studio.show()?;
 
+        let snap_dir = std::env::var("SOTTO_EXPORT_PREVIEW_DIR")
+            .ok()
+            .filter(|v| !v.trim().is_empty())
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| {
+                let win_default = std::path::PathBuf::from("D:/whiper-mobile");
+                if win_default.exists() {
+                    win_default
+                } else {
+                    std::path::PathBuf::from(".")
+                }
+            });
+        let _ = std::fs::create_dir_all(&snap_dir);
+
+        let write_snap_bmp = |filename: &str, buf: &slint::SharedPixelBuffer<slint::Rgba8Pixel>| {
+            let w = buf.width();
+            let h = buf.height();
+            let pixels = buf.as_slice();
+            let pixel_bytes_len = pixels.len() * 4;
+            let file_size = 14 + 40 + pixel_bytes_len;
+            let mut out = Vec::with_capacity(file_size);
+            out.extend_from_slice(b"BM");
+            out.extend_from_slice(&(file_size as u32).to_le_bytes());
+            out.extend_from_slice(&0u32.to_le_bytes());
+            out.extend_from_slice(&(14u32 + 40u32).to_le_bytes());
+            out.extend_from_slice(&(40u32).to_le_bytes());
+            out.extend_from_slice(&(w as i32).to_le_bytes());
+            out.extend_from_slice(&((-(h as i32))).to_le_bytes());
+            out.extend_from_slice(&(1u16).to_le_bytes());
+            out.extend_from_slice(&(32u16).to_le_bytes());
+            out.extend_from_slice(&(0u32).to_le_bytes());
+            out.extend_from_slice(&(pixel_bytes_len as u32).to_le_bytes());
+            out.extend_from_slice(&(2835u32).to_le_bytes());
+            out.extend_from_slice(&(2835u32).to_le_bytes());
+            out.extend_from_slice(&(0u32).to_le_bytes());
+            out.extend_from_slice(&(0u32).to_le_bytes());
+            for p in pixels {
+                out.push(p.b);
+                out.push(p.g);
+                out.push(p.r);
+                out.push(p.a);
+            }
+            let out_path = snap_dir.join(filename);
+            std::fs::write(&out_path, out).expect("write snapshot bmp");
+            println!("[Snapshot] Successfully saved {} ({}x{})", out_path.display(), w, h);
+        };
+
         let buffer = studio.window().take_snapshot()?;
-        let w = buffer.width();
-        let h = buffer.height();
-        let pixels = buffer.as_slice();
-        let pixel_bytes_len = pixels.len() * 4;
-        let file_size = 14 + 40 + pixel_bytes_len;
-        let mut out = Vec::with_capacity(file_size);
-        out.extend_from_slice(b"BM");
-        out.extend_from_slice(&(file_size as u32).to_le_bytes());
-        out.extend_from_slice(&0u32.to_le_bytes());
-        out.extend_from_slice(&(14u32 + 40u32).to_le_bytes());
-        out.extend_from_slice(&(40u32).to_le_bytes());
-        out.extend_from_slice(&(w as i32).to_le_bytes());
-        out.extend_from_slice(&((-(h as i32))).to_le_bytes());
-        out.extend_from_slice(&(1u16).to_le_bytes());
-        out.extend_from_slice(&(32u16).to_le_bytes());
-        out.extend_from_slice(&(0u32).to_le_bytes());
-        out.extend_from_slice(&(pixel_bytes_len as u32).to_le_bytes());
-        out.extend_from_slice(&(2835u32).to_le_bytes());
-        out.extend_from_slice(&(2835u32).to_le_bytes());
-        out.extend_from_slice(&(0u32).to_le_bytes());
-        out.extend_from_slice(&(0u32).to_le_bytes());
-        for p in pixels {
-            out.push(p.b);
-            out.push(p.g);
-            out.push(p.r);
-            out.push(p.a);
-        }
-        std::fs::write("D:/whiper-mobile/studio_snapshot.bmp", out).unwrap();
-        println!("[Snapshot] Successfully saved studio_snapshot.bmp ({}x{})", w, h);
+        write_snap_bmp("studio_snapshot.bmp", &buffer);
 
         // Take bottom snapshot (scrolled all the way to -max_scroll)
         let scale = studio.window().scale_factor().max(1.0);
@@ -4224,63 +4243,13 @@ fn main() -> Result<(), slint::PlatformError> {
         studio.set_history_is_scrolling(false);
 
         let buf_bottom = studio.window().take_snapshot()?;
-        let w_b = buf_bottom.width();
-        let h_b = buf_bottom.height();
-        let pixels_b = buf_bottom.as_slice();
-        let pixel_bytes_len_b = pixels_b.len() * 4;
-        let file_size_b = 14 + 40 + pixel_bytes_len_b;
-        let mut out_b = Vec::with_capacity(file_size_b);
-        out_b.extend_from_slice(b"BM");
-        out_b.extend_from_slice(&(file_size_b as u32).to_le_bytes());
-        out_b.extend_from_slice(&0u32.to_le_bytes());
-        out_b.extend_from_slice(&(14u32 + 40u32).to_le_bytes());
-        out_b.extend_from_slice(&(40u32).to_le_bytes());
-        out_b.extend_from_slice(&(w_b as i32).to_le_bytes());
-        out_b.extend_from_slice(&((-(h_b as i32))).to_le_bytes());
-        out_b.extend_from_slice(&(1u16).to_le_bytes());
-        out_b.extend_from_slice(&(32u16).to_le_bytes());
-        out_b.extend_from_slice(&(0u32).to_le_bytes());
-        out_b.extend_from_slice(&(pixel_bytes_len_b as u32).to_le_bytes());
-        out_b.extend_from_slice(&(2835u32).to_le_bytes());
-        out_b.extend_from_slice(&(2835u32).to_le_bytes());
-        out_b.extend_from_slice(&(0u32).to_le_bytes());
-        out_b.extend_from_slice(&(0u32).to_le_bytes());
-        for p in pixels_b {
-            out_b.push(p.b);
-            out_b.push(p.g);
-            out_b.push(p.r);
-            out_b.push(p.a);
-        }
-        std::fs::write("D:/whiper-mobile/studio_snapshot_bottom.bmp", out_b).unwrap();
-        println!("[Snapshot] Successfully saved studio_snapshot_bottom.bmp ({}x{}), max_scroll={}", w_b, h_b, max_scroll);
+        write_snap_bmp("studio_snapshot_bottom.bmp", &buf_bottom);
+        println!("[Snapshot] max_scroll={}", max_scroll);
 
         // Take scrolling snapshot to prove scrollbar is normal and not bright cyan
         studio.set_history_is_scrolling(true);
         let buf_scrolling = studio.window().take_snapshot()?;
-        let mut out_s = Vec::with_capacity(file_size_b);
-        out_s.extend_from_slice(b"BM");
-        out_s.extend_from_slice(&(file_size_b as u32).to_le_bytes());
-        out_s.extend_from_slice(&0u32.to_le_bytes());
-        out_s.extend_from_slice(&(14u32 + 40u32).to_le_bytes());
-        out_s.extend_from_slice(&(40u32).to_le_bytes());
-        out_s.extend_from_slice(&(w_b as i32).to_le_bytes());
-        out_s.extend_from_slice(&((-(h_b as i32))).to_le_bytes());
-        out_s.extend_from_slice(&(1u16).to_le_bytes());
-        out_s.extend_from_slice(&(32u16).to_le_bytes());
-        out_s.extend_from_slice(&(0u32).to_le_bytes());
-        out_s.extend_from_slice(&(pixel_bytes_len_b as u32).to_le_bytes());
-        out_s.extend_from_slice(&(2835u32).to_le_bytes());
-        out_s.extend_from_slice(&(2835u32).to_le_bytes());
-        out_s.extend_from_slice(&(0u32).to_le_bytes());
-        out_s.extend_from_slice(&(0u32).to_le_bytes());
-        for p in buf_scrolling.as_slice() {
-            out_s.push(p.b);
-            out_s.push(p.g);
-            out_s.push(p.r);
-            out_s.push(p.a);
-        }
-        std::fs::write("D:/whiper-mobile/studio_snapshot_scrolling.bmp", out_s).unwrap();
-        println!("[Snapshot] Successfully saved studio_snapshot_scrolling.bmp");
+        write_snap_bmp("studio_snapshot_scrolling.bmp", &buf_scrolling);
 
         // Also take Tab 2 (Customization) snapshot with animated Listening preview pill
         studio.set_active_tab(2);
@@ -4294,39 +4263,11 @@ fn main() -> Result<(), slint::PlatformError> {
         studio.set_timer_sec(3);
 
         let buf_cust = studio.window().take_snapshot()?;
-        let w_c = buf_cust.width();
-        let h_c = buf_cust.height();
-        let pixels_c = buf_cust.as_slice();
-        let pixel_bytes_len_c = pixels_c.len() * 4;
-        let file_size_c = 14 + 40 + pixel_bytes_len_c;
-        let mut out_c = Vec::with_capacity(file_size_c);
-        out_c.extend_from_slice(b"BM");
-        out_c.extend_from_slice(&(file_size_c as u32).to_le_bytes());
-        out_c.extend_from_slice(&0u32.to_le_bytes());
-        out_c.extend_from_slice(&(14u32 + 40u32).to_le_bytes());
-        out_c.extend_from_slice(&(40u32).to_le_bytes());
-        out_c.extend_from_slice(&(w_c as i32).to_le_bytes());
-        out_c.extend_from_slice(&((-(h_c as i32))).to_le_bytes());
-        out_c.extend_from_slice(&(1u16).to_le_bytes());
-        out_c.extend_from_slice(&(32u16).to_le_bytes());
-        out_c.extend_from_slice(&(0u32).to_le_bytes());
-        out_c.extend_from_slice(&(pixel_bytes_len_c as u32).to_le_bytes());
-        out_c.extend_from_slice(&(2835u32).to_le_bytes());
-        out_c.extend_from_slice(&(2835u32).to_le_bytes());
-        out_c.extend_from_slice(&(0u32).to_le_bytes());
-        out_c.extend_from_slice(&(0u32).to_le_bytes());
-        for p in pixels_c {
-            out_c.push(p.b);
-            out_c.push(p.g);
-            out_c.push(p.r);
-            out_c.push(p.a);
-        }
-        std::fs::write("D:/whiper-mobile/studio_customization_snapshot.bmp", out_c).unwrap();
-        println!("[Snapshot] Successfully saved studio_customization_snapshot.bmp ({}x{})", w_c, h_c);
+        write_snap_bmp("studio_customization_snapshot.bmp", &buf_cust);
 
         // 2. Take bottom snapshot of customization view (showing trigger controls and save preset)
         let custom_h = studio.get_custom_content_height();
-        let custom_vis = (h_c as f32) - sotto_desktop::smooth_scroll::CHROME_RESERVED_PX;
+        let custom_vis = (buf_cust.height() as f32) - sotto_desktop::smooth_scroll::CONTENT_CHROME_RESERVED_PX;
         let max_scroll = (custom_h - custom_vis).max(0.0);
         studio.set_custom_viewport_y(-max_scroll);
         studio.set_custom_scroll_progress(1.0);
@@ -4334,68 +4275,12 @@ fn main() -> Result<(), slint::PlatformError> {
         studio.set_custom_can_scroll(max_scroll > 0.0);
         studio.set_trigger_primary_display("Ctrl".into());
         let buffer_b = studio.window().take_snapshot()?;
-        let w_b = buffer_b.width();
-        let h_b = buffer_b.height();
-        let pixels_b = buffer_b.as_slice();
-        let pixel_bytes_len_b = pixels_b.len() * 4;
-        let file_size_b = 14 + 40 + pixel_bytes_len_b;
-        let mut out_b = Vec::with_capacity(file_size_b);
-        out_b.extend_from_slice(b"BM");
-        out_b.extend_from_slice(&(file_size_b as u32).to_le_bytes());
-        out_b.extend_from_slice(&0u32.to_le_bytes());
-        out_b.extend_from_slice(&(14u32 + 40u32).to_le_bytes());
-        out_b.extend_from_slice(&(40u32).to_le_bytes());
-        out_b.extend_from_slice(&(w_b as i32).to_le_bytes());
-        out_b.extend_from_slice(&((-(h_b as i32))).to_le_bytes());
-        out_b.extend_from_slice(&(1u16).to_le_bytes());
-        out_b.extend_from_slice(&(32u16).to_le_bytes());
-        out_b.extend_from_slice(&(0u32).to_le_bytes());
-        out_b.extend_from_slice(&(pixel_bytes_len_b as u32).to_le_bytes());
-        out_b.extend_from_slice(&(2835u32).to_le_bytes());
-        out_b.extend_from_slice(&(2835u32).to_le_bytes());
-        out_b.extend_from_slice(&(0u32).to_le_bytes());
-        out_b.extend_from_slice(&(0u32).to_le_bytes());
-        for p in pixels_b {
-            out_b.push(p.b);
-            out_b.push(p.g);
-            out_b.push(p.r);
-            out_b.push(p.a);
-        }
-        std::fs::write("D:/whiper-mobile/studio_customization_bottom.bmp", out_b).unwrap();
-        println!("[Snapshot] Successfully saved studio_customization_bottom.bmp ({}x{})", w_b, h_b);
+        write_snap_bmp("studio_customization_bottom.bmp", &buffer_b);
 
         // 3. Take snapshot with key recording listening state
         studio.set_is_recording_key(true);
         let buffer_picker = studio.window().take_snapshot()?;
-        let w_p = buffer_picker.width();
-        let h_p = buffer_picker.height();
-        let pixels_p = buffer_picker.as_slice();
-        let pixel_bytes_len_p = pixels_p.len() * 4;
-        let file_size_p = 14 + 40 + pixel_bytes_len_p;
-        let mut out_p = Vec::with_capacity(file_size_p);
-        out_p.extend_from_slice(b"BM");
-        out_p.extend_from_slice(&(file_size_p as u32).to_le_bytes());
-        out_p.extend_from_slice(&0u32.to_le_bytes());
-        out_p.extend_from_slice(&(14u32 + 40u32).to_le_bytes());
-        out_p.extend_from_slice(&(40u32).to_le_bytes());
-        out_p.extend_from_slice(&(w_p as i32).to_le_bytes());
-        out_p.extend_from_slice(&((-(h_p as i32))).to_le_bytes());
-        out_p.extend_from_slice(&(1u16).to_le_bytes());
-        out_p.extend_from_slice(&(32u16).to_le_bytes());
-        out_p.extend_from_slice(&(0u32).to_le_bytes());
-        out_p.extend_from_slice(&(pixel_bytes_len_p as u32).to_le_bytes());
-        out_p.extend_from_slice(&(2835u32).to_le_bytes());
-        out_p.extend_from_slice(&(2835u32).to_le_bytes());
-        out_p.extend_from_slice(&(0u32).to_le_bytes());
-        out_p.extend_from_slice(&(0u32).to_le_bytes());
-        for p in pixels_p {
-            out_p.push(p.b);
-            out_p.push(p.g);
-            out_p.push(p.r);
-            out_p.push(p.a);
-        }
-        std::fs::write("D:/whiper-mobile/studio_customization_picker.bmp", out_p).unwrap();
-        println!("[Snapshot] Successfully saved studio_customization_picker.bmp ({}x{})", w_p, h_p);
+        write_snap_bmp("studio_customization_picker.bmp", &buffer_picker);
 
         // 4. Providers tab snapshot (logos, model radio lists, single key box)
         studio.set_provider_id("groq".into());
@@ -4414,35 +4299,7 @@ fn main() -> Result<(), slint::PlatformError> {
         studio.set_provider_chip_text("Groq whisper-large-v3-turbo".into());
         studio.set_active_tab(1);
         let buffer_prov = studio.window().take_snapshot()?;
-        let w_v = buffer_prov.width();
-        let h_v = buffer_prov.height();
-        let pixels_v = buffer_prov.as_slice();
-        let pixel_bytes_len_v = pixels_v.len() * 4;
-        let file_size_v = 14 + 40 + pixel_bytes_len_v;
-        let mut out_v = Vec::with_capacity(file_size_v);
-        out_v.extend_from_slice(b"BM");
-        out_v.extend_from_slice(&(file_size_v as u32).to_le_bytes());
-        out_v.extend_from_slice(&0u32.to_le_bytes());
-        out_v.extend_from_slice(&(14u32 + 40u32).to_le_bytes());
-        out_v.extend_from_slice(&(40u32).to_le_bytes());
-        out_v.extend_from_slice(&(w_v as i32).to_le_bytes());
-        out_v.extend_from_slice(&((-(h_v as i32))).to_le_bytes());
-        out_v.extend_from_slice(&(1u16).to_le_bytes());
-        out_v.extend_from_slice(&(32u16).to_le_bytes());
-        out_v.extend_from_slice(&(0u32).to_le_bytes());
-        out_v.extend_from_slice(&(pixel_bytes_len_v as u32).to_le_bytes());
-        out_v.extend_from_slice(&(2835u32).to_le_bytes());
-        out_v.extend_from_slice(&(2835u32).to_le_bytes());
-        out_v.extend_from_slice(&(0u32).to_le_bytes());
-        out_v.extend_from_slice(&(0u32).to_le_bytes());
-        for p in pixels_v {
-            out_v.push(p.b);
-            out_v.push(p.g);
-            out_v.push(p.r);
-            out_v.push(p.a);
-        }
-        std::fs::write("D:/whiper-mobile/studio_providers_snapshot.bmp", out_v).unwrap();
-        println!("[Snapshot] Successfully saved studio_providers_snapshot.bmp ({}x{})", w_v, h_v);
+        write_snap_bmp("studio_providers_snapshot.bmp", &buffer_prov);
         return Ok(());
     }
 

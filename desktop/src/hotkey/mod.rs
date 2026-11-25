@@ -410,8 +410,22 @@ pub fn vk_to_string(vk: u32) -> String {
 }
 
 #[cfg(not(target_os = "windows"))]
-pub fn format_hotkey(_modifiers: u32, _vk: u32) -> String {
-    "F8".to_string()
+pub fn format_hotkey(modifiers: u32, vk: u32) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    if (modifiers & 0x0002) != 0 && !matches!(vk, 0x11 | 0xA2 | 0xA3) {
+        parts.push("Ctrl".to_string());
+    }
+    if (modifiers & 0x0001) != 0 && !matches!(vk, 0x12 | 0xA4 | 0xA5) {
+        parts.push("Alt".to_string());
+    }
+    if (modifiers & 0x0004) != 0 && !matches!(vk, 0x10 | 0xA0 | 0xA1) {
+        parts.push("Shift".to_string());
+    }
+    if (modifiers & 0x0008) != 0 && !matches!(vk, 0x5B | 0x5C) {
+        parts.push("Win".to_string());
+    }
+    parts.push(vk_to_string(vk));
+    parts.join(" + ")
 }
 
 #[cfg(not(target_os = "windows"))]

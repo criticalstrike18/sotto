@@ -151,7 +151,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libasound2-dev libudev-dev libfontconfig1-dev libx11-dev libxext-dev libxrender-dev libxkbcommon-dev libwayland-dev xvfb ffmpeg
+          sudo apt-get install -y libasound2-dev libudev-dev libfontconfig1-dev libx11-dev libxext-dev libxrender-dev libxkbcommon-dev libxkbcommon-x11-0 libxkbcommon-x11-dev libwayland-dev xvfb ffmpeg
 
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
@@ -186,7 +186,8 @@ jobs:
         if: runner.os == 'macOS'
         run: |
           mkdir -p preview-out
-          SOTTO_EXPORT_PREVIEW_DIR="$PWD/preview-out" SOTTO_PREVIEW_ONLY=1 cargo test --no-fail-fast
+          cargo test --no-fail-fast
+          SOTTO_EXPORT_PREVIEW_DIR="$PWD/preview-out" cargo run --bin sotto-windows -- --snapshot-studio
           for f in preview-out/*.bmp; do
             sips -s format png "$f" --out "${f%.bmp}.png" >/dev/null 2>&1 || true
           done

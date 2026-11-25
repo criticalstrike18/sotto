@@ -3,6 +3,11 @@
 // event loop supports a single shown window per process): dictations,
 // dictations-bottom, providers, customization, narrow viewport.
 //
+// Note: On macOS, `winit::EventLoop` must execute on thread #1 (Cocoa main thread),
+// whereas `cargo test` runs tests on worker threads; CI covers macOS rendering on the
+// main thread via `sotto-windows --snapshot-studio` with `SOTTO_EXPORT_PREVIEW_DIR`.
+#![cfg(not(target_os = "macos"))]
+//
 // Protocol:
 //   - Deterministic fixtures only (fixed strings, placeholder icons, embedded
 //     Inter). Never the user's real database.

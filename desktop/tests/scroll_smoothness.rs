@@ -4,7 +4,7 @@
 // (~8ms ≈ production timer, ~16ms ≈ 60fps display rate).
 
 use sotto_desktop::smooth_scroll::SmoothScrollEngine;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 fn test_engine() -> SmoothScrollEngine {
     let mut e = SmoothScrollEngine::new();
@@ -13,22 +13,19 @@ fn test_engine() -> SmoothScrollEngine {
     e
 }
 
-/// Pump ticks at ~60fps until settle or timeout. Returns (frames, positions).
+/// Pump simulated ticks at exact `frame` cadence until settled or timeout. Returns (frames, positions).
 fn pump_to_settle(e: &mut SmoothScrollEngine, frame: Duration, timeout: Duration) -> (usize, Vec<f32>) {
-    let start = Instant::now();
+    let dt = frame.as_secs_f32();
+    let max_frames = ((timeout.as_secs_f32() / dt).ceil() as usize).clamp(1, 600);
     let mut frames = 0usize;
     let mut positions = vec![e.current_y()];
-    while start.elapsed() < timeout {
-        std::thread::sleep(frame);
-        match e.tick() {
+    while frames < max_frames {
+        match e.tick_dt(dt) {
             Some(y) => {
                 frames += 1;
                 positions.push(y);
             }
             None => break,
-        }
-        if frames > 600 {
-            break;
         }
     }
     (frames, positions)
@@ -101,10 +98,10 @@ fn test_per_frame_step_bounded_single_notch() {
 fn test_settles_within_lenis_time_budget() {
     let mut e = test_engine();
     e.on_wheel_accelerated_dt(-360.0, 1.0);
-    let start = Instant::now();
-    let (frames, _) = pump_to_settle(&mut e, Duration::from_millis(16), Duration::from_secs(2));
-    let elapsed = start.elapsed();
-    assert!(elapsed < Duration::from_millis(1500), "must settle in <1.5s like Lenis, took {elapsed:?}");
+    let frame = Duration::from_millis(16);
+    let (frames, _) = pump_to_settle(&mut e, frame, Duration::from_secs(2));
+    let simulated = frame.mul_f32(frames as f32);
+    assert!(simulated < Duration::from_millis(1500), "must settle in <1.5s like Lenis, took {simulated:?}");
     assert!(frames >= 3, "must take >=3 frames (not instant), took {frames}");
     // After settle, tick returns None (engine at rest).
     assert!(e.tick().is_none(), "settled engine must return None");

@@ -1,3 +1,6 @@
+// On macOS, `winit::EventLoop` must run on OS thread #1 rather than a `cargo test` worker thread.
+#![cfg(not(target_os = "macos"))]
+
 #[test]
 fn test_flickable_offset_without_content_height() -> Result<(), Box<dyn std::error::Error>> {
     std::env::set_var("SLINT_BACKEND", "winit-software");

@@ -195,16 +195,15 @@ fn test_large_list_still_settles_in_budget() {
     let mut e = SmoothScrollEngine::new();
     e.set_dimensions(content_h, 600.0);
     e.on_wheel_accelerated_dt(-1200.0, 1.0);
-    let start = Instant::now();
-    let mut frames = 0;
-    while start.elapsed() < Duration::from_secs(2) {
-        std::thread::sleep(Duration::from_millis(16));
+    let mut frames = 0u32;
+    while frames < 125 {
         frames += 1;
-        if e.tick().is_none() {
+        if e.tick_dt(0.016).is_none() {
             break;
         }
     }
-    assert!(start.elapsed() < Duration::from_millis(1500), "200-card list must settle in <1.5s");
+    let simulated_ms = frames * 16;
+    assert!(simulated_ms < 1500, "200-card list must settle in <1.5s (took {simulated_ms}ms)");
     assert!((e.current_y() - -1200.0).abs() < 0.5);
     assert!(frames < 120);
 }
@@ -421,11 +420,9 @@ fn test_anchor_scrolling_shifts_position_without_visual_jump() {
     eng.set_dimensions(3000.0, 600.0);
     eng.scroll_to(-500.0);
 
-    // Run ticks to reach -500.0
-    let start = Instant::now();
-    while start.elapsed() < Duration::from_millis(1500) {
-        std::thread::sleep(Duration::from_millis(16));
-        if eng.tick().is_none() {
+    // Run simulated 60Hz ticks to reach -500.0 deterministically (immune to CI sleep jitter)
+    for _ in 0..120 {
+        if eng.tick_dt(0.016).is_none() {
             break;
         }
     }
