@@ -107,6 +107,47 @@ fn test_purge_button_inside_bar() {
 }
 
 #[test]
+fn test_purge_armed_buttons_inside_bar() {
+    let s = studio();
+    s.set_history_count(5);
+    s.set_provider_chip_text("Groq whisper-large-v3-turbo".into());
+    s.set_purge_confirm_armed(true);
+
+    for (w, h) in [(760u32, 600u32), (1040u32, 840u32)] {
+        s.window().set_size(slint::PhysicalSize::new(w, h));
+        let bar = find_one(&s, "StudioWindow::stats-bar");
+        let cancel = find_one(&s, "StudioWindow::purge-cancel-btn");
+        let confirm = find_one(&s, "StudioWindow::purge-btn");
+
+        let bar_pos = bar.absolute_position();
+        let bar_size = bar.size();
+        let c_pos = cancel.absolute_position();
+        let c_size = cancel.size();
+        let p_pos = confirm.absolute_position();
+        let p_size = confirm.size();
+
+        assert!(c_size.width > 0.0 && c_size.height > 0.0, "cancel must have size at {w}x{h}");
+        assert!(p_size.width > c_size.width, "armed confirm button must expand at {w}x{h}");
+        approx(
+            c_pos.y + c_size.height / 2.0,
+            bar_pos.y + bar_size.height / 2.0,
+            &format!("cancel centered in bar at {w}x{h}"),
+        );
+        approx(
+            p_pos.y + p_size.height / 2.0,
+            bar_pos.y + bar_size.height / 2.0,
+            &format!("confirm centered in bar at {w}x{h}"),
+        );
+        assert!(
+            c_pos.x >= bar_pos.x - 1.0
+                && c_pos.x + c_size.width <= p_pos.x + 1.0
+                && p_pos.x + p_size.width <= bar_pos.x + bar_size.width + 1.0,
+            "cancel and confirm buttons must sit non-overlapping inside bar at {w}x{h}"
+        );
+    }
+}
+
+#[test]
 fn test_scrollbar_thumb_inside_track() {
     let s = studio();
     let items: Vec<HistoryItem> = (0..8)

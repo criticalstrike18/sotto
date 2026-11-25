@@ -567,19 +567,52 @@ fn provider_credentials(
     db: &sotto_desktop::db::HistoryDb,
     provider_id: &str,
 ) -> (Option<String>, Option<String>) {
-    if let Ok(Some(k)) = db.get_provider_key(provider_id) {
-        let key = if k.api_key.trim().is_empty() { None } else { Some(k.api_key) };
-        let model = if k.selected_model.trim().is_empty() { None } else { Some(k.selected_model) };
-        if key.is_some() {
-            return (key, model);
+    let stored = db.get_provider_key(provider_id).ok().flatten();
+    let model = stored
+        .as_ref()
+        .map(|k| k.selected_model.trim().to_string())
+        .filter(|m| !m.is_empty());
+    let mut key = stored
+        .as_ref()
+        .map(|k| k.api_key.trim().to_string())
+        .filter(|k| !k.is_empty());
+    if key.is_none() {
+        key = db
+            .get_provider_api_keys(provider_id)
+            .ok()
+            .and_then(|mut keys| if keys.is_empty() { None } else { Some(keys.remove(0)) });
+    }
+    if key.is_none() {
+        let env_name = if provider_id == router::PROVIDER_GEMINI {
+            "GEMINI_API_KEY"
+        } else {
+            "GROQ_API_KEY"
+        };
+        key = std::env::var(env_name).ok().filter(|v| !v.trim().is_empty());
+    }
+    (key, model)
+}
+
+/// Loads all configured API keys for a provider's rotation pool (SQLite first, env fallback).
+fn load_provider_key_pool(
+    db: &sotto_desktop::db::HistoryDb,
+    provider_id: &str,
+) -> Vec<String> {
+    let mut keys = db.get_provider_api_keys(provider_id).unwrap_or_default();
+    if keys.is_empty() {
+        let env_name = if provider_id == router::PROVIDER_GEMINI {
+            "GEMINI_API_KEY"
+        } else {
+            "GROQ_API_KEY"
+        };
+        if let Ok(v) = std::env::var(env_name) {
+            let trimmed = v.trim().to_string();
+            if !trimmed.is_empty() {
+                keys.push(trimmed);
+            }
         }
     }
-    let env_name = if provider_id == router::PROVIDER_GEMINI {
-        "GEMINI_API_KEY"
-    } else {
-        "GROQ_API_KEY"
-    };
-    (std::env::var(env_name).ok(), None)
+    keys
 }
 
 fn slint_string_model(values: Vec<String>) -> ModelRc<slint::SharedString> {
@@ -773,9 +806,7 @@ fn refresh_provider_models(
                     .unwrap_or_default();
                 if !models.iter().any(|m| m == &stored) {
                     let first = models[0].clone();
-                    if let Ok(Some(pk)) = db.get_provider_key(provider_id) {
-                        let _ = db.upsert_provider_key(provider_id, &pk.api_key, &first);
-                    }
+                    let _ = db.set_provider_model(provider_id, &first);
                     if let Ok(mut t) = transcriber.lock() {
                         t.set_provider_model(provider_id, first);
                     }
@@ -1853,42 +1884,58 @@ fn wire_studio_window(
     studio.on_save_provider(move || {
         if let Some(s) = s_weak_prov_save.upgrade() {
             let db = hq_prov_save.db();
-            let gkey = s.get_groq_key().as_str().trim().to_string();
-            let mkey = s.get_gemini_key().as_str().trim().to_string();
             let gmodel = model_at(&s.get_groq_models(), s.get_groq_model_index(), router::DEFAULT_GROQ_MODEL);
             let mmodel = model_at(&s.get_gemini_models(), s.get_gemini_model_index(), router::DEFAULT_GEMINI_MODEL);
-            if gkey.is_empty() {
-                let _ = db.delete_provider_key(router::PROVIDER_GROQ);
-            } else {
-                let _ = db.upsert_provider_key(router::PROVIDER_GROQ, &gkey, &gmodel);
-            }
-            if mkey.is_empty() {
-                let _ = db.delete_provider_key(router::PROVIDER_GEMINI);
-            } else {
-                let _ = db.upsert_provider_key(router::PROVIDER_GEMINI, &mkey, &mmodel);
-            }
+            // Persist selected models without touching or deleting the encrypted key pool.
+            let _ = db.set_provider_model(router::PROVIDER_GROQ, &gmodel);
+            let _ = db.set_provider_model(router::PROVIDER_GEMINI, &mmodel);
+
             let active = s.get_provider_id().as_str().to_string();
-            let lang = s.get_transcription_language().as_str().to_string();
-            // Rebuild the live dispatcher atomically from the store if not mid-recording
+            let raw_lang = s.get_transcription_language().as_str().to_string();
+            let active_model = if active == router::PROVIDER_GEMINI { &mmodel } else { &gmodel };
+            let is_en_only = router::is_english_only_model(active_model);
+            s.set_model_supports_multilingual(!is_en_only);
+            let lang = if is_en_only { "en".to_string() } else { raw_lang };
+            if is_en_only {
+                s.set_transcription_language("en".into());
+                s.set_selected_other_language_display("More Languages".into());
+                s.set_language_dropdown_open(false);
+            }
+
+            // Rebuild the live dispatcher preserving full multi-key rotation pools if idle.
             if engine_state_sp.load(Ordering::SeqCst) == 0 {
                 if let Ok(shared) = SHARED_TRANSCRIBER.lock() {
                     if let Some(ref tr) = *shared {
-                        let (gk, gm) = provider_credentials(db, router::PROVIDER_GROQ);
-                        let (mk, mm) = provider_credentials(db, router::PROVIDER_GEMINI);
-                        if let Ok(mut t) = tr.lock() {
-                            *t = router::Transcriber::with_language(&active, gk, gm, mk, mm, &lang);
-                            s.set_provider_chip_text(t.chip_text().into());
+                        let groq_keys = load_provider_key_pool(db, router::PROVIDER_GROQ);
+                        let gemini_keys = load_provider_key_pool(db, router::PROVIDER_GEMINI);
+                        let chip = if let Ok(mut t) = tr.lock() {
+                            *t = router::Transcriber::with_key_pools(
+                                &active,
+                                groq_keys,
+                                Some(gmodel.clone()),
+                                gemini_keys,
+                                Some(mmodel.clone()),
+                                &lang,
+                            );
+                            Some(t.chip_text())
+                        } else {
+                            None
+                        };
+                        if let Some(c) = chip {
+                            s.set_provider_chip_text(c.into());
                         }
                     }
                 }
             }
+            refresh_key_pool_ui(&s, db, None);
+
             let mut cfg = config::AppConfig::load();
             cfg.active_provider = active;
             cfg.transcription_language = lang;
             if let Err(e) = cfg.save() {
                 eprintln!("[Config Error] Failed to persist provider: {}", e);
             } else {
-                println!("[Providers] Keys, models and active provider saved to local SQLite store.");
+                println!("[Providers] Active provider & models saved; encrypted keys loaded from local SQLite store.");
             }
             s.set_provider_save_feedback(true);
             let s_timer = s.as_weak();
@@ -1907,13 +1954,15 @@ fn wire_studio_window(
         if let Some(s) = s_weak_prov_test.upgrade() {
             let db = hq_prov_test.db();
             let active = s.get_provider_id().as_str().to_string();
-            let field_key = if active == router::PROVIDER_GEMINI {
-                s.get_gemini_key().as_str().trim().to_string()
-            } else {
-                s.get_groq_key().as_str().trim().to_string()
-            };
             let (stored_key, _) = provider_credentials(db, &active);
-            let key = if field_key.is_empty() { stored_key.unwrap_or_default() } else { field_key };
+            let pending_key = if active == router::PROVIDER_GEMINI {
+                let draft = s.get_gemini_new_key().as_str().trim().to_string();
+                if draft.is_empty() { s.get_gemini_key().as_str().trim().to_string() } else { draft }
+            } else {
+                let draft = s.get_groq_new_key().as_str().trim().to_string();
+                if draft.is_empty() { s.get_groq_key().as_str().trim().to_string() } else { draft }
+            };
+            let key = stored_key.unwrap_or(pending_key);
             if key.trim().is_empty() {
                 s.set_provider_status("Enter an API key first, then Test.".into());
                 s.set_provider_status_ok(false);
@@ -1973,6 +2022,12 @@ fn wire_studio_window(
         }
 
         if let Some(s) = s_weak_add_key.upgrade() {
+            let (primary, _) = provider_credentials(db, &prov);
+            if prov == router::PROVIDER_GEMINI {
+                s.set_gemini_key(primary.unwrap_or_default().into());
+            } else {
+                s.set_groq_key(primary.unwrap_or_default().into());
+            }
             refresh_key_pool_ui(&s, &db, None);
         }
         println!("[KeyPool] Added key to {}: {}", prov, router::mask_key(k));
@@ -1998,6 +2053,12 @@ fn wire_studio_window(
         }
 
         if let Some(s) = s_weak_rem_key.upgrade() {
+            let (primary, _) = provider_credentials(db, &prov);
+            if prov == router::PROVIDER_GEMINI {
+                s.set_gemini_key(primary.unwrap_or_default().into());
+            } else {
+                s.set_groq_key(primary.unwrap_or_default().into());
+            }
             refresh_key_pool_ui(&s, &db, None);
         }
         println!("[KeyPool] Removed key from {}: {}", prov, router::mask_key(k));
@@ -2062,6 +2123,7 @@ fn wire_studio_window(
     });
 
     let s_weak_model_changed = s_weak.clone();
+    let hq_model_changed = Arc::clone(history_queue);
     studio.on_model_changed(move |provider, idx| {
         if let Some(s) = s_weak_model_changed.upgrade() {
             let prov = provider.as_str();
@@ -2070,6 +2132,15 @@ fn wire_studio_window(
             } else {
                 model_at(&s.get_groq_models(), idx, router::DEFAULT_GROQ_MODEL)
             };
+            let _ = hq_model_changed.db().set_provider_model(prov, &model_name);
+            if let Ok(shared) = SHARED_TRANSCRIBER.lock() {
+                if let Some(ref tr) = *shared {
+                    if let Ok(mut t) = tr.lock() {
+                        t.set_provider_model(prov, model_name.clone());
+                        s.set_provider_chip_text(t.chip_text().into());
+                    }
+                }
+            }
             let is_en_only = router::is_english_only_model(&model_name);
             s.set_model_supports_multilingual(!is_en_only);
             if is_en_only {
@@ -2251,11 +2322,7 @@ fn wire_studio_window(
             pill.set_surface_opacity(cfg.surface_opacity);
 
             // Apply speech recording behavior to hotkey manager on Save Preset!
-            let hk_mode = if cfg.trigger_mode == 1 {
-                hotkey::HotkeyMode::HoldToTalk
-            } else {
-                hotkey::HotkeyMode::Toggle
-            };
+            let hk_mode = resolve_hotkey_mode(false, cfg.trigger_mode);
             // Only mutate active OS hotkey hooks if not currently recording audio
             if engine_state_sc.load(Ordering::SeqCst) == 0 {
                 if let Ok(guard) = GLOBAL_HOTKEY_MGR.lock() {
@@ -2318,6 +2385,7 @@ fn wire_studio_window(
             }
 
             s.set_active_tab(tab);
+            s.set_purge_confirm_armed(false);
 
             #[cfg(target_os = "windows")]
             if let Some(hwnd) = hwnd_opt {
@@ -2391,6 +2459,9 @@ fn wire_studio_window(
     studio.on_clear_all_history(move || {
         println!("[Studio History] Clear all history requested");
         let _ = std::io::stdout().flush();
+        if let Some(s) = s_weak_clear.upgrade() {
+            s.set_purge_confirm_armed(false);
+        }
         let s_cb = s_weak_clear.clone();
         hq_clear.enqueue_clear_all(move || {
             let _ = slint::invoke_from_event_loop(move || {
@@ -2398,6 +2469,14 @@ fn wire_studio_window(
                     let empty_model: Rc<VecModel<HistoryItem>> = Rc::new(VecModel::default());
                     s.set_history_items(ModelRc::from(empty_model));
                     s.set_history_count(0);
+                    s.set_purge_confirm_armed(false);
+                    s.set_history_viewport_y(0.0);
+                    s.set_history_scroll_progress(0.0);
+                    s.set_history_can_scroll(false);
+                    s.set_history_is_scrolling(false);
+                    sotto_desktop::smooth_scroll::STUDIO_SCROLLER.with(|scroller| {
+                        scroller.borrow_mut().jump_to(0.0);
+                    });
                     STUDIO_HISTORY_GEN.fetch_add(1, Ordering::SeqCst);
                 }
             });
@@ -2536,6 +2615,7 @@ fn toggle_studio_window(
                         .collect();
                     s.set_history_items(ModelRc::from(Rc::new(VecModel::from(items))));
                     s.set_history_count(count);
+                    s.set_purge_confirm_armed(false);
                 }
                 let _ = s.show();
                 bring_studio_to_front(s);
@@ -3610,6 +3690,15 @@ fn run_capture_bench(
     Ok(())
 }
 
+/// Resolves the startup or saved hotkey mode; `--hold-to-talk` overrides persisted config.
+fn resolve_hotkey_mode(cli_hold_to_talk: bool, trigger_mode: i32) -> hotkey::HotkeyMode {
+    if cli_hold_to_talk || trigger_mode == 1 {
+        hotkey::HotkeyMode::HoldToTalk
+    } else {
+        hotkey::HotkeyMode::Toggle
+    }
+}
+
 fn main() -> Result<(), slint::PlatformError> {
     #[cfg(target_os = "windows")]
     unsafe {
@@ -4668,8 +4757,8 @@ fn load_or_create_ipc_token() -> String {
     let provider_db = history_db.clone();
     let (_, groq_model) = provider_credentials(&provider_db, router::PROVIDER_GROQ);
     let (_, gemini_model) = provider_credentials(&provider_db, router::PROVIDER_GEMINI);
-    let groq_keys = provider_db.get_provider_api_keys(router::PROVIDER_GROQ).unwrap_or_default();
-    let gemini_keys = provider_db.get_provider_api_keys(router::PROVIDER_GEMINI).unwrap_or_default();
+    let groq_keys = load_provider_key_pool(&provider_db, router::PROVIDER_GROQ);
+    let gemini_keys = load_provider_key_pool(&provider_db, router::PROVIDER_GEMINI);
     let transcriber: router::SharedTranscriber = Arc::new(Mutex::new(router::Transcriber::with_key_pools(
         &app_cfg.active_provider,
         groq_keys,
@@ -4895,11 +4984,7 @@ fn load_or_create_ipc_token() -> String {
     });
 
     // 7. Global Hotkey Engine (Step 1.6)
-    let hotkey_mode = if is_hold_to_talk {
-        hotkey::HotkeyMode::HoldToTalk
-    } else {
-        hotkey::HotkeyMode::Toggle
-    };
+    let hotkey_mode = resolve_hotkey_mode(is_hold_to_talk, app_cfg.trigger_mode);
 
     let pill_hk_weak = pill.as_weak();
     let inactivity_hk = inactivity.clone();
@@ -5740,5 +5825,14 @@ mod tests {
         assert_eq!(area.clamp_point(2000, 2000, 140, 60, 8), (1772, 972));
         assert_eq!(area.clamp_point(-50, -50, 140, 60, 8), (8, 8));
         assert_eq!(area.clamp_point(100, 100, 140, 60, 8), (100, 100));
+    }
+
+    #[test]
+    fn test_resolve_hotkey_mode_honors_saved_trigger_mode_and_cli_override() {
+        assert_eq!(resolve_hotkey_mode(false, 0), hotkey::HotkeyMode::Toggle);
+        assert_eq!(resolve_hotkey_mode(false, 1), hotkey::HotkeyMode::HoldToTalk);
+        assert_eq!(resolve_hotkey_mode(true, 0), hotkey::HotkeyMode::HoldToTalk);
+        assert_eq!(resolve_hotkey_mode(true, 1), hotkey::HotkeyMode::HoldToTalk);
+        assert_eq!(resolve_hotkey_mode(false, 99), hotkey::HotkeyMode::Toggle);
     }
 }

@@ -42,7 +42,8 @@ windows-sys = { version = "0.60", features = [
     "Win32_System_DataExchange",
     "Win32_System_Memory",
     "Win32_System_Registry",
-    "Win32_Media_Audio"
+    "Win32_Media_Audio",
+    "Win32_Security_Cryptography"
 ] }
 windows = { version = "0.62", features = ["Media_Control"] }
 raw-window-handle = "0.6"

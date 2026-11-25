@@ -554,6 +554,7 @@ export component StudioWindow inherits Window {
     in-out property <length> top-spacer-height: 0px;
     in-out property <length> bottom-spacer-height: 0px;
     in-out property <int> history-count: 0;
+    in-out property <bool> purge-confirm-armed: false;
     in-out property <int> copied-item-id: -1;
     in-out property <bool> save-feedback: false;
     in-out property <length> history-viewport-y: 0px;
@@ -862,30 +863,63 @@ export component StudioWindow inherits Window {
                             spacing: Theme.space-8;
                             alignment: end;
 
+                            if root.history-count > 0 && root.purge-confirm-armed : purge-cancel-btn := Rectangle {
+                                width: 62px;
+                                height: 26px;
+                                border-radius: Theme.radius-md;
+                                background: cancel-purge-touch.pressed ? Theme.line-strong : (cancel-purge-touch.has-hover ? Theme.line : Theme.chrome-bg);
+                                border-width: 1px;
+                                border-color: cancel-purge-touch.has-hover ? Theme.line-strong : Theme.line;
+
+                                Text {
+                                    text: "Cancel";
+                                    font-size: Theme.type-label.size;
+                                    font-weight: 500;
+                                    color: cancel-purge-touch.has-hover ? Theme.white : Theme.ink-secondary;
+                                    horizontal-alignment: center;
+                                    vertical-alignment: center;
+                                }
+
+                                cancel-purge-touch := TouchArea {
+                                    clicked => {
+                                        root.purge-confirm-armed = false;
+                                    }
+                                }
+                            }
+
                             if root.history-count > 0 : purge-btn := Rectangle {
-                            width: 96px;
-                            height: 26px;
-                            border-radius: Theme.radius-md;
-                            background: clear-touch.pressed ? Theme.danger-pressed : (clear-touch.has-hover ? Theme.danger-hover : Theme.chrome-bg);
-                            border-width: 1px;
-                            border-color: clear-touch.has-hover ? Theme.danger : Theme.line;
+                                width: root.purge-confirm-armed ? 112px : 96px;
+                                height: 26px;
+                                border-radius: Theme.radius-md;
+                                background: root.purge-confirm-armed
+                                    ? (clear-touch.pressed ? Theme.danger-pressed : (clear-touch.has-hover ? Theme.danger : Theme.danger-hover))
+                                    : (clear-touch.pressed ? Theme.danger-pressed : (clear-touch.has-hover ? Theme.danger-hover : Theme.chrome-bg));
+                                border-width: 1px;
+                                border-color: (root.purge-confirm-armed || clear-touch.has-hover) ? Theme.danger : Theme.line;
 
-                            Text {
-                                text: "Purge Data";
-                                font-size: Theme.type-label.size;
-                                font-weight: 500;
-                                color: clear-touch.has-hover ? Theme.danger-soft : Theme.ink-secondary;
-                                horizontal-alignment: center;
-                                vertical-alignment: center;
+                                Text {
+                                    text: root.purge-confirm-armed ? "Confirm Purge" : "Purge Data";
+                                    font-size: Theme.type-label.size;
+                                    font-weight: 500;
+                                    color: root.purge-confirm-armed
+                                        ? (clear-touch.has-hover ? Theme.white : Theme.danger-soft)
+                                        : (clear-touch.has-hover ? Theme.danger-soft : Theme.ink-secondary);
+                                    horizontal-alignment: center;
+                                    vertical-alignment: center;
+                                }
+
+                                clear-touch := TouchArea {
+                                    clicked => {
+                                        if (!root.purge-confirm-armed) {
+                                            root.purge-confirm-armed = true;
+                                        } else {
+                                            root.purge-confirm-armed = false;
+                                            root.clear-all-history();
                                         }
-
-                            clear-touch := TouchArea {
-                                clicked => {
-                                    root.clear-all-history();
+                                    }
                                 }
                             }
                         }
-                    }
                     }
                 }
             }

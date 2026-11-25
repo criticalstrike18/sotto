@@ -10,7 +10,9 @@
 
 use i_slint_backend_testing::ElementHandle;
 use slint::platform::PointerEventButton;
+use slint::ComponentHandle;
 use sotto_desktop::components::{HistoryCard, KeyField, ModelRow, ProviderCard, TabBar};
+use sotto_desktop::StudioWindow;
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -30,12 +32,16 @@ fn test_all_click_paths() {
     let copied: Rc<RefCell<(i32, String)>> = Rc::new(RefCell::new((0, String::new())));
     let revealed: Rc<RefCell<bool>> = Rc::new(RefCell::new(false));
     let card_fired: Rc<RefCell<bool>> = Rc::new(RefCell::new(false));
+    let purge_count: Rc<RefCell<usize>> = Rc::new(RefCell::new(0));
+    let purge_states: Rc<RefCell<Vec<bool>>> = Rc::new(RefCell::new(Vec::new()));
 
     let tabs_c = Rc::clone(&tabs);
     let row_c = Rc::clone(&row_fired);
     let copied_c = Rc::clone(&copied);
     let revealed_c = Rc::clone(&revealed);
     let card_c = Rc::clone(&card_fired);
+    let purge_count_c = Rc::clone(&purge_count);
+    let purge_states_c = Rc::clone(&purge_states);
 
     slint::spawn_local(async move {
         // Phase 1: tab clicks route to select-tab with the right index.
@@ -77,6 +83,24 @@ fn test_all_click_paths() {
         prov.on_clicked(move || *pc.borrow_mut() = true);
         click("ProviderCard::card-touch", ElementHandle::find_by_element_id(&prov, "ProviderCard::card-touch").next()).await;
 
+        // Phase 6: two-stage purge confirmation arms -> cancels -> arms -> confirms.
+        let studio = StudioWindow::new().expect("StudioWindow must instantiate");
+        studio.window().set_size(slint::PhysicalSize::new(1040, 840));
+        studio.set_history_count(5);
+        let pcc = Rc::clone(&purge_count_c);
+        studio.on_clear_all_history(move || *pcc.borrow_mut() += 1);
+        // Click 1: arms confirmation, does NOT purge yet.
+        click("StudioWindow::clear-touch (arm)", ElementHandle::find_by_element_id(&studio, "StudioWindow::clear-touch").next()).await;
+        purge_states_c.borrow_mut().push(studio.get_purge_confirm_armed());
+        // Click Cancel: disarms confirmation, still does NOT purge.
+        click("StudioWindow::cancel-purge-touch", ElementHandle::find_by_element_id(&studio, "StudioWindow::cancel-purge-touch").next()).await;
+        purge_states_c.borrow_mut().push(studio.get_purge_confirm_armed());
+        // Click 2 (arm again) then Click 3 (Confirm Purge): invokes clear_all_history and disarms.
+        click("StudioWindow::clear-touch (re-arm)", ElementHandle::find_by_element_id(&studio, "StudioWindow::clear-touch").next()).await;
+        purge_states_c.borrow_mut().push(studio.get_purge_confirm_armed());
+        click("StudioWindow::clear-touch (confirm)", ElementHandle::find_by_element_id(&studio, "StudioWindow::clear-touch").next()).await;
+        purge_states_c.borrow_mut().push(studio.get_purge_confirm_armed());
+
         slint::quit_event_loop().unwrap();
     })
     .unwrap();
@@ -89,4 +113,6 @@ fn test_all_click_paths() {
     assert_eq!(text, "Copy me please.", "copy click must deliver transcript");
     assert!(*revealed.borrow(), "eye click must fire toggle-visible()");
     assert!(*card_fired.borrow(), "card click must fire clicked()");
+    assert_eq!(*purge_states.borrow(), vec![true, false, true, false], "two-stage purge arm/cancel/confirm states");
+    assert_eq!(*purge_count.borrow(), 1, "clear_all_history must fire only after second-stage confirm click");
 }
