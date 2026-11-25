@@ -33,7 +33,6 @@ jobs:
   build-desktop:
     name: Build Sotto Desktop (${{ matrix.target-name }})
     runs-on: ${{ matrix.os }}
-    if: matrix.os != 'macos-latest' || github.ref_name == 'staging-test' || github.event_name == 'workflow_dispatch'
     strategy:
       fail-fast: false
       matrix:
@@ -45,10 +44,6 @@ jobs:
           - os: ubuntu-latest
             target-name: sotto-linux
             artifact-name: sotto-linux
-            binary-path: desktop/target/release/sotto-windows
-          - os: macos-latest
-            target-name: sotto-macos
-            artifact-name: sotto-macos
             binary-path: desktop/target/release/sotto-windows
 
     steps:
@@ -75,7 +70,7 @@ jobs:
         run: cargo build --release
         working-directory: desktop
 
-      - name: Prepare Non-Windows Binary
+      - name: Prepare Linux Binary
         if: runner.os != 'Windows'
         run: |
           cp ${{ matrix.binary-path }} desktop/target/release/${{ matrix.artifact-name }}
@@ -94,6 +89,39 @@ jobs:
         with:
           files: desktop/target/release/${{ matrix.artifact-name }}
           generate_release_notes: true
+
+  build-macos-staging:
+    name: Build Sotto Desktop (sotto-macos staging)
+    runs-on: macos-latest
+    if: github.ref_name == 'staging-test' || github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: desktop
+
+      - name: Build macOS Binary
+        run: |
+          cargo build --release
+          cp target/release/sotto-windows target/release/sotto-macos
+          chmod +x target/release/sotto-macos
+        working-directory: desktop
+
+      - name: Upload macOS Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sotto-macos
+          path: desktop/target/release/sotto-macos
+          if-no-files-found: error
 
   test-and-preview:
     name: Test & UI Preview (${{ matrix.target-name }})
@@ -137,6 +165,11 @@ jobs:
           New-Item -ItemType Directory -Force -Path preview-out | Out-Null
           $env:SOTTO_EXPORT_PREVIEW_DIR = "$PWD/preview-out"
           cargo test --no-fail-fast
+          if (Get-Command ffmpeg -ErrorAction SilentlyContinue) {
+            Get-ChildItem preview-out\*.bmp | ForEach-Object {
+              ffmpeg -y -i $_.FullName ($_.FullName -replace '\.bmp$', '.png') -loglevel error
+            }
+          }
         working-directory: desktop
 
       - name: Run Desktop Test Suite & UI Snapshots (Linux via Xvfb)
