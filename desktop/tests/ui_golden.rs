@@ -132,7 +132,8 @@ fn write_bmp(path: &std::path::Path, w: u32, h: u32, rgba: &[u8]) {
             out.push(rgba[i + 3]);
         }
     }
-    std::fs::create_dir_all(GOLDEN_DIR).expect("golden dir must exist");
+    std::fs::create_dir_all(path.parent().unwrap_or_else(|| std::path::Path::new(GOLDEN_DIR)))
+        .expect("golden parent dir must exist");
     std::fs::write(path, out).expect("golden must be writable");
 }
 
@@ -159,6 +160,21 @@ fn read_bmp(path: &std::path::Path) -> (u32, u32, Vec<u8>) {
 
 /// Compare or (re)baseline. Returns diff percent.
 fn check_golden(name: &str, w: u32, h: u32, rgba: &[u8]) -> f64 {
+    if let Ok(preview_dir) = std::env::var("SOTTO_EXPORT_PREVIEW_DIR") {
+        if !preview_dir.trim().is_empty() {
+            let preview_path = std::path::PathBuf::from(preview_dir).join(format!("{name}.bmp"));
+            write_bmp(&preview_path, w, h, rgba);
+        }
+    }
+    if std::env::var("SOTTO_PREVIEW_ONLY").is_ok() {
+        assert!(w > 0 && h > 0, "snapshot {name} must have non-zero size");
+        assert!(
+            rgba.chunks_exact(4).any(|px| px[0] > 0 || px[1] > 0 || px[2] > 0),
+            "snapshot {name} rendered blank image"
+        );
+        return 0.0;
+    }
+
     let path = std::path::PathBuf::from(GOLDEN_DIR).join(format!("{name}.bmp"));
     if std::env::var("UPDATE_GOLDENS").is_ok() || !path.exists() {
         write_bmp(&path, w, h, rgba);

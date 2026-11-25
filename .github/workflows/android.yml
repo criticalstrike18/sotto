@@ -2,13 +2,13 @@ name: Sotto Android CI & Release
 
 on:
   push:
-    branches: [ "main" ]
+    branches: [ "release-main", "staging-test" ]
     tags: [ "android-v*", "v*" ]
     paths:
       - "android/**"
       - ".github/workflows/android.yml"
   pull_request:
-    branches: [ "main" ]
+    branches: [ "release-main", "staging-test" ]
     paths:
       - "android/**"
       - ".github/workflows/android.yml"

@@ -1,18 +1,18 @@
 name: Sotto Desktop CI & Release
 
-# - Every push to main / PR builds the Windows .exe (sanity check).
-# - Pushing a tag like `desktop-v0.1.0` builds + publishes a GitHub Release
-#   with the binaries attached (downloadable from the Releases page).
-# - Linux/macOS matrix rows are COMMENTED OUT (PAUSED) until Phase 4 lands.
-#   To re-enable: uncomment the rows below — build, rename, upload, and
-#   release steps already run off matrix variables, so no other changes needed.
+# 3-Branch Workflow:
+#   - `dev`          : Regular features/WIP pushes (NO GitHub runners triggered)
+#   - `staging-test` : Cross-platform build, test & UI screenshot verification
+#                      across Windows, Ubuntu Linux (Xvfb), and macOS runners
+#   - `release-main` : Production release builds & tag-triggered GitHub Releases
+#                      (`desktop-v*` or `v*`)
 
 on:
   push:
-    branches: [ "main" ]
+    branches: [ "release-main", "staging-test" ]
     tags: [ "desktop-v*", "v*" ]
   pull_request:
-    branches: [ "main" ]
+    branches: [ "release-main", "staging-test" ]
     paths:
       - "desktop/**"
       - ".github/workflows/desktop.yml"
@@ -33,6 +33,7 @@ jobs:
   build-desktop:
     name: Build Sotto Desktop (${{ matrix.target-name }})
     runs-on: ${{ matrix.os }}
+    if: matrix.os != 'macos-latest' || github.ref_name == 'staging-test' || github.event_name == 'workflow_dispatch'
     strategy:
       fail-fast: false
       matrix:
@@ -44,6 +45,10 @@ jobs:
           - os: ubuntu-latest
             target-name: sotto-linux
             artifact-name: sotto-linux
+            binary-path: desktop/target/release/sotto-windows
+          - os: macos-latest
+            target-name: sotto-macos
+            artifact-name: sotto-macos
             binary-path: desktop/target/release/sotto-windows
 
     steps:
@@ -70,7 +75,7 @@ jobs:
         run: cargo build --release
         working-directory: desktop
 
-      - name: Prepare Linux Binary
+      - name: Prepare Non-Windows Binary
         if: runner.os != 'Windows'
         run: |
           cp ${{ matrix.binary-path }} desktop/target/release/${{ matrix.artifact-name }}
@@ -89,3 +94,75 @@ jobs:
         with:
           files: desktop/target/release/${{ matrix.artifact-name }}
           generate_release_notes: true
+
+  test-and-preview:
+    name: Test & UI Preview (${{ matrix.target-name }})
+    runs-on: ${{ matrix.os }}
+    if: github.ref_name == 'staging-test' || github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            target-name: windows
+          - os: ubuntu-latest
+            target-name: linux
+          - os: macos-latest
+            target-name: macos
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Linux Test & Display Dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev libudev-dev libfontconfig1-dev libx11-dev libxext-dev libxrender-dev libxkbcommon-dev libwayland-dev xvfb ffmpeg
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: desktop
+
+      - name: Run Desktop Test Suite (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path preview-out | Out-Null
+          $env:SOTTO_EXPORT_PREVIEW_DIR = "$PWD/preview-out"
+          cargo test --no-fail-fast
+        working-directory: desktop
+
+      - name: Run Desktop Test Suite & UI Snapshots (Linux via Xvfb)
+        if: runner.os == 'Linux'
+        run: |
+          mkdir -p preview-out
+          SOTTO_EXPORT_PREVIEW_DIR="$PWD/preview-out" SOTTO_PREVIEW_ONLY=1 xvfb-run -a cargo test --no-fail-fast
+          for f in preview-out/*.bmp; do
+            ffmpeg -y -i "$f" "${f%.bmp}.png" -loglevel error || true
+          done
+        working-directory: desktop
+
+      - name: Run Desktop Test Suite & UI Snapshots (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          mkdir -p preview-out
+          SOTTO_EXPORT_PREVIEW_DIR="$PWD/preview-out" SOTTO_PREVIEW_ONLY=1 cargo test --no-fail-fast
+          for f in preview-out/*.bmp; do
+            sips -s format png "$f" --out "${f%.bmp}.png" >/dev/null 2>&1 || true
+          done
+        working-directory: desktop
+
+      - name: Upload UI Preview Screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ui-previews-${{ matrix.target-name }}
+          path: desktop/preview-out/*
+          if-no-files-found: warn

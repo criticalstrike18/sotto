@@ -640,7 +640,8 @@ mod tests {
         ensure_provider_tables(&db).expect("migrate legacy keys");
         db.add_provider_api_key("groq", "gsk_new_secret").expect("add new key");
 
-        // Raw columns in SQLite must hold DPAPI ciphertext, never plaintext.
+        // On Windows, raw columns in SQLite must hold DPAPI ciphertext, never plaintext.
+        #[cfg(target_os = "windows")]
         {
             let conn = db.connection().lock().unwrap();
             let raw_pk: String = conn
