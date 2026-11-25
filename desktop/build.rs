@@ -29,4 +29,16 @@ fn main() {
     }
     slint_build::compile_with_config("ui/hud.slint", config())
         .expect("Slint compilation failed");
+
+    println!("cargo:rerun-if-changed=assets/icons/sotto.ico");
+    #[cfg(target_os = "windows")]
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
+        let mut res = tauri_winres::WindowsResource::new();
+        res.set_icon("assets/icons/sotto.ico")
+            .set("ProductName", "Sotto")
+            .set("FileDescription", "Sotto — Voice Dictation & HUD")
+            .set("OriginalFilename", "sotto-windows.exe");
+        res.compile_for(&["sotto-windows"])
+            .expect("Windows icon/version resource compilation failed");
+    }
 }

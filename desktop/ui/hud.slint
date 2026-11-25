@@ -505,6 +505,7 @@ export component FloatingPillWindow inherits Window {
     no-frame: true;
     background: transparent;
     default-font-family: "DM Sans";
+    icon: @image-url("../assets/icons/sotto-mark-dark.svg");
     width: 140px;
     height: 60px;
 
@@ -537,6 +538,7 @@ export component FloatingPillWindow inherits Window {
 
 export component StudioWindow inherits Window {
     title: "Sotto — Voice Pill Studio & Settings";
+    icon: @image-url("../assets/icons/sotto-mark-dark.svg");
     min-width: 760px;
     min-height: 600px;
     preferred-width: 1040px;
@@ -749,17 +751,25 @@ export component StudioWindow inherits Window {
         HorizontalLayout {
             alignment: space-between;
 
-            // Brand Title
-            VerticalLayout {
-                alignment: center;
+            // Brand Lockup (Dark Mode Full SVG Logo)
+            brand-logo := Rectangle {
+                width: 120px;
+                height: 36px;
+                border-radius: Theme.radius-lg;
+                background: Theme.black;
+                border-width: 1px;
+                border-color: Theme.line;
+                clip: true;
+                accessible-role: text;
+                accessible-label: "Sotto";
 
-                Text {
-                    text: "Sotto Studio";
-                    font-size: Theme.type-display.size;
-                    font-weight: Theme.type-display.weight;
-                    font-family: Theme.type-display.family;
-                    letter-spacing: -0.6px;
-                    color: Theme.ink-primary;
+                Image {
+                    x: 1px;
+                    y: 1px;
+                    width: parent.width - 2px;
+                    height: parent.height - 2px;
+                    source: @image-url("../assets/icons/sotto-dark.svg");
+                    image-fit: contain;
                 }
             }
 

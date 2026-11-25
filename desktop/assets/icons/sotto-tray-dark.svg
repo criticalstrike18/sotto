@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32" role="img" aria-label="Sotto tray dark">
+  <g fill="#FFFFFF" transform="translate(16 16) scale(0.090) translate(-198.1 -150.05)">
+    <rect x="42.8" y="125" width="39.3" height="65.2" rx="19.7" />
+    <rect x="102.5" y="89.6" width="51" height="124.8" rx="25.5" />
+    <rect x="173.7" y="44" width="50.4" height="212.1" rx="25.2" />
+    <rect x="243.8" y="89.6" width="50.4" height="124.7" rx="25.2" />
+    <rect x="314.4" y="125.1" width="39" height="65.2" rx="19.5" />
+  </g>
+</svg>

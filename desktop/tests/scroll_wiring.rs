@@ -634,3 +634,40 @@ fn test_scroll_performance_and_memory_wiring_contracts() {
     assert!(app_icon_rs.contains("prewarm_app_icon"), "Background icon prewarm helper missing");
     assert!(app_icon_rs.contains("clear_ui_icon_cache"), "UI icon cache cleanup missing");
 }
+
+#[test]
+fn test_svg_branding_and_desktop_icon_wiring() {
+    let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let hud = std::fs::read_to_string(manifest_dir.join("ui/hud.slint")).expect("read hud.slint");
+    let build_rs = std::fs::read_to_string(manifest_dir.join("build.rs")).expect("read build.rs");
+    let tray_rs = std::fs::read_to_string(manifest_dir.join("src/tray.rs")).expect("read tray.rs");
+    let readme = std::fs::read_to_string(manifest_dir.join("../README.md")).expect("read README.md");
+
+    for asset in [
+        "assets/icons/sotto-dark.svg",
+        "assets/icons/sotto-light.svg",
+        "assets/icons/sotto-mark-dark.svg",
+        "assets/icons/sotto-mark-light.svg",
+        "assets/icons/sotto.ico",
+        "assets/icons/sotto-tray-dark-16.png",
+        "assets/icons/sotto-tray-dark-32.png",
+        "assets/icons/sotto-tray-light-16.png",
+        "assets/icons/sotto-tray-light-32.png",
+    ] {
+        assert!(manifest_dir.join(asset).exists(), "missing branding asset: {asset}");
+    }
+
+    assert!(!hud.contains("\"Sotto Studio\""), "Studio header text should be replaced by Sotto SVG branding");
+    assert!(hud.contains("brand-logo"), "Studio header brand-logo missing");
+    assert!(hud.contains("sotto-dark.svg"), "Studio header should use dark-mode SVG logo");
+    assert!(hud.contains("sotto-mark-dark.svg"), "Window icon should use Sotto mark SVG");
+
+    assert!(build_rs.contains("assets/icons/sotto.ico"), "Windows resource icon missing from build.rs");
+    assert!(build_rs.contains("tauri_winres::WindowsResource"), "Windows resource compiler missing");
+
+    assert!(tray_rs.contains("SystemUsesLightTheme"), "Tray icon must adapt to Windows light/dark taskbar theme");
+    assert!(tray_rs.contains("WM_SETTINGCHANGE"), "Tray must refresh icon when Windows theme toggles");
+
+    assert!(readme.contains("prefers-color-scheme: dark") && readme.contains("sotto-dark.svg"));
+    assert!(readme.contains("prefers-color-scheme: light") && readme.contains("sotto-light.svg"));
+}

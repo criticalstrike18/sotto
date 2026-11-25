@@ -1,4 +1,10 @@
-# Sotto 🎙️
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="./sotto-dark.svg" />
+    <source media="(prefers-color-scheme: light)" srcset="./sotto-light.svg" />
+    <img alt="Sotto" src="./sotto-dark.svg" width="320" />
+  </picture>
+</p>
 
 <p align="center">
   <b>Ultra-fast, zero-friction voice dictation & HUD for Windows and Linux.</b><br/>

@@ -5,7 +5,7 @@
 //
 // Backend: headless Slint testing backend (no windows, CI-safe).
 
-use i_slint_backend_testing::ElementHandle;
+use i_slint_backend_testing::{ElementHandle, ElementQuery};
 use sotto_desktop::{app_icon, HistoryItem, StudioWindow};
 use slint::{ComponentHandle, ModelRc, VecModel};
 use std::rc::Rc;
@@ -186,6 +186,17 @@ fn test_tab_bar_present_and_sized() {
     let size = tabs.size();
     approx(size.height, 36.0, "tab bar height");
     assert!(size.width >= 400.0, "tab bar must fit three tabs");
+
+    let logo = find_one(&s, "StudioWindow::brand-logo");
+    let lpos = logo.absolute_position();
+    let lsize = logo.size();
+    let tpos = tabs.absolute_position();
+    approx(lsize.width, 120.0, "brand logo width");
+    approx(lsize.height, 36.0, "brand logo height matches tab bar");
+    assert!(
+        lpos.x + lsize.width < tpos.x,
+        "brand logo must stay clear to the left of studio tabs"
+    );
 }
 
 #[test]
@@ -228,14 +239,13 @@ fn test_last_card_reachable_at_max_scroll() {
     let csize = container.size();
     let bottom = cpos.y + csize.height;
 
-    let mut imgs = ElementHandle::find_by_element_type_name(&s, "Image");
-    let marker_img = imgs
-        .next()
-        .expect("tail marker image must be reachable at max scroll");
-    assert!(
-        imgs.next().is_none(),
-        "only the tail card carries an image"
-    );
+    let imgs = ElementQuery::from_root(&s)
+        .match_id("StudioWindow::history-container")
+        .match_descendants()
+        .match_type_name("Image")
+        .find_all();
+    assert_eq!(imgs.len(), 1, "only the tail card inside history-container carries an image");
+    let marker_img = &imgs[0];
     let pos = marker_img.absolute_position();
     let size = marker_img.size();
     assert!(
