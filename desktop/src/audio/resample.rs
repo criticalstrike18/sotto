@@ -3,20 +3,30 @@
 
 pub const TARGET_SAMPLE_RATE: u32 = 16000;
 
-/// Downmixes multi-channel interleaved float audio samples into a single mono channel.
-pub fn downmix_interleaved_to_mono(interleaved: &[f32], channels: u16) -> Vec<f32> {
+/// Downmixes multi-channel interleaved float audio samples into a caller-owned
+/// `mono` vector, reusing its existing allocation when called on audio threads.
+pub fn downmix_interleaved_into(interleaved: &[f32], channels: u16, mono: &mut Vec<f32>) {
+    mono.clear();
     if channels <= 1 {
-        return interleaved.to_vec();
+        mono.extend_from_slice(interleaved);
+        return;
     }
 
     let channels_usize = channels as usize;
     let num_frames = interleaved.len() / channels_usize;
     if num_frames == 0 {
-        return Vec::new();
+        return;
     }
 
     // Measure energy per channel to detect if one channel is dominant (e.g. laptop mic array)
-    let mut channel_energies = vec![0.0f64; channels_usize];
+    let mut stack_energies = [0.0f64; 16];
+    let mut heap_energies = Vec::new();
+    let channel_energies: &mut [f64] = if channels_usize <= stack_energies.len() {
+        &mut stack_energies[..channels_usize]
+    } else {
+        heap_energies.resize(channels_usize, 0.0f64);
+        &mut heap_energies
+    };
     for frame in interleaved.chunks_exact(channels_usize) {
         for (i, &s) in frame.iter().enumerate() {
             channel_energies[i] += (s as f64) * (s as f64);
@@ -33,7 +43,7 @@ pub fn downmix_interleaved_to_mono(interleaved: &[f32], channels: u16) -> Vec<f3
     // If one channel has > 75% of total energy, use it directly to preserve full vocal amplitude
     let is_single_dominant = total_energy > 0.0 && (max_energy / total_energy) > 0.75;
 
-    let mut mono = Vec::with_capacity(num_frames);
+    mono.reserve(num_frames);
     if is_single_dominant {
         for frame in interleaved.chunks_exact(channels_usize) {
             mono.push(frame[max_ch_idx]);
@@ -45,7 +55,16 @@ pub fn downmix_interleaved_to_mono(interleaved: &[f32], channels: u16) -> Vec<f3
             mono.push(sum * factor);
         }
     }
+}
 
+/// Downmixes multi-channel interleaved float audio samples into a single mono channel.
+pub fn downmix_interleaved_to_mono(interleaved: &[f32], channels: u16) -> Vec<f32> {
+    let mut mono = Vec::with_capacity(if channels <= 1 {
+        interleaved.len()
+    } else {
+        interleaved.len() / (channels as usize).max(1)
+    });
+    downmix_interleaved_into(interleaved, channels, &mut mono);
     mono
 }
 

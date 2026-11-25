@@ -246,9 +246,9 @@ fn test_last_card_reachable_at_max_scroll() {
     let imgs = ElementQuery::from_root(&s)
         .match_id("StudioWindow::history-container")
         .match_descendants()
-        .match_type_name("Image")
+        .match_id("HistoryCard::app-icon-img")
         .find_all();
-    assert_eq!(imgs.len(), 1, "only the tail card inside history-container carries an image");
+    assert_eq!(imgs.len(), 1, "only the tail card inside history-container carries an app icon image");
     let marker_img = &imgs[0];
     let pos = marker_img.absolute_position();
     let size = marker_img.size();
@@ -308,8 +308,8 @@ fn test_estimator_calibrated_against_layout() {
         ordered.sort_by(|a, b| a.partial_cmp(b).unwrap());
         for h in ordered.iter().take(2) {
             assert!(
-                (h - 77.0).abs() <= 1.0,
-                "at {width}px: single-line card must measure 77px, got {h:.0}"
+                (h - 75.0).abs() <= 1.0,
+                "at {width}px: single-line card must measure 75px, got {h:.0}"
             );
         }
     }

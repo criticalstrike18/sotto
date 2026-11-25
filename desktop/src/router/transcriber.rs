@@ -299,16 +299,25 @@ impl Transcriber {
     }
 
     /// Blocking prompt-aware variant. Uses the same cross-provider failover as
-    /// the async path, which matters when a chunk is sealed mid-recording.
+    /// the async path, reusing one persistent multi-threaded Tokio runtime so
+    /// HTTP/2 TLS connections stay warm across takes and sealed chunks.
     pub fn transcribe_blocking_with_prompt(
         &self,
         wav_bytes: Vec<u8>,
         prompt: Option<&str>,
     ) -> Result<TranscriptionResult, String> {
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .map_err(|e| format!("Failed to create tokio runtime: {}", e))?;
+        static TRANSCRIBER_RUNTIME: std::sync::OnceLock<tokio::runtime::Runtime> =
+            std::sync::OnceLock::new();
+        let rt = if let Some(rt) = TRANSCRIBER_RUNTIME.get() {
+            rt
+        } else {
+            let built = tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(2)
+                .enable_all()
+                .build()
+                .map_err(|e| format!("Failed to create tokio runtime: {}", e))?;
+            TRANSCRIBER_RUNTIME.get_or_init(|| built)
+        };
         rt.block_on(self.transcribe_with_prompt(wav_bytes, prompt))
     }
 }

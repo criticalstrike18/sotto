@@ -30,7 +30,8 @@ use crate::audio::filter::{
     MIN_RECORDING_MS, SILENCE_RMS_THRESHOLD,
 };
 use crate::audio::resample::{
-    downmix_interleaved_to_mono, float_to_pcm16, resample_linear, TARGET_SAMPLE_RATE,
+    downmix_interleaved_into, downmix_interleaved_to_mono, float_to_pcm16, resample_linear,
+    TARGET_SAMPLE_RATE,
 };
 use crate::audio::splice::{self, SpliceConfig, DEFAULT_SPEECH_RMS};
 use crate::audio::timing::{self, CaptureTiming, SourceClock};
@@ -94,6 +95,38 @@ struct Meters {
     low: Arc<AtomicU32>,
     mid: Arc<AtomicU32>,
     high: Arc<AtomicU32>,
+}
+
+/// Lock-free atomic meter handle polled by the UI animation timer at 50 Hz
+/// without touching `GLOBAL_RECORDER` or stalling behind DSP drains.
+#[derive(Clone)]
+pub struct LockFreeMeters {
+    is_recording: Arc<AtomicBool>,
+    energy: Arc<AtomicU32>,
+    low: Arc<AtomicU32>,
+    mid: Arc<AtomicU32>,
+    high: Arc<AtomicU32>,
+}
+
+impl LockFreeMeters {
+    pub fn live_rms(&self) -> f32 {
+        if !self.is_recording.load(Ordering::Relaxed) {
+            return 0.0;
+        }
+        let raw = self.energy.load(Ordering::Relaxed);
+        ((raw as f32) / 10_000.0).min(1.0)
+    }
+
+    pub fn live_formants(&self) -> (f32, f32, f32, f32) {
+        if !self.is_recording.load(Ordering::Relaxed) {
+            return (0.0, 0.0, 0.0, 0.0);
+        }
+        let total = ((self.energy.load(Ordering::Relaxed) as f32) / 10_000.0).min(1.0);
+        let low = ((self.low.load(Ordering::Relaxed) as f32) / 10_000.0).min(1.0);
+        let mid = ((self.mid.load(Ordering::Relaxed) as f32) / 10_000.0).min(1.0);
+        let high = ((self.high.load(Ordering::Relaxed) as f32) / 10_000.0).min(1.0);
+        (total, low, mid, high)
+    }
 }
 
 /// Everything an input callback needs. Kept small and cloneable so the same
@@ -171,11 +204,14 @@ impl OnboardBridge {
         }
     }
 
-    fn take_audio(&self) -> Vec<f32> {
-        self.take
-            .lock()
-            .map(|mut t| std::mem::take(&mut *t))
-            .unwrap_or_default()
+    fn take_audio_into(&self, out: &mut Vec<f32>) {
+        out.clear();
+        if let Ok(mut t) = self.take.lock() {
+            if !t.is_empty() {
+                out.extend_from_slice(&t);
+                t.clear();
+            }
+        }
     }
 }
 
@@ -202,6 +238,8 @@ pub struct AudioRecorder {
     take_counter: u64,
     last_timing: Option<CaptureTiming>,
     long: LongCaptureState,
+    drain_scratch: Vec<f32>,
+    onboard_drain_scratch: Vec<f32>,
     /// Upload budgets for one chunk. Gemini inlines base64 audio (4/3
     /// expansion), so the session lowers these when Gemini is active.
     chunk_soft_bytes: usize,
@@ -480,50 +518,60 @@ fn build_stream(
     };
 
     match sample_format {
-        SampleFormat::F32 => device.build_input_stream(
-            &stream_config,
-            move |data: &[f32], _| {
-                if data.is_empty() {
-                    return;
-                }
-                let mono = downmix_interleaved_to_mono(data, sink.channels);
-                handle_frames(&sink, data, &mono);
-            },
-            err_fn,
-            None,
-        ),
-        SampleFormat::I16 => device.build_input_stream(
-            &stream_config,
-            move |data: &[i16], _| {
-                if data.is_empty() {
-                    return;
-                }
-                let mut interleaved = Vec::with_capacity(data.len());
-                for &sample in data {
-                    interleaved.push(sample as f32 / 32768.0);
-                }
-                let mono = downmix_interleaved_to_mono(&interleaved, sink.channels);
-                handle_frames(&sink, &interleaved, &mono);
-            },
-            err_fn,
-            None,
-        ),
-        SampleFormat::U16 => device.build_input_stream(
-            &stream_config,
-            move |data: &[u16], _| {
-                if data.is_empty() {
-                    return;
-                }
-                let mut interleaved = Vec::with_capacity(data.len());
-                for &sample in data {
-                    interleaved.push((sample as f32 - 32768.0) / 32768.0);
-                }
-                let mono = downmix_interleaved_to_mono(&interleaved, sink.channels);
-                handle_frames(&sink, &interleaved, &mono);
-            },
-            err_fn,
-            None,
-        ),
+        SampleFormat::F32 => {
+            let mut mono_scratch = Vec::with_capacity(4096);
+            device.build_input_stream(
+                &stream_config,
+                move |data: &[f32], _| {
+                    if data.is_empty() {
+                        return;
+                    }
+                    downmix_interleaved_into(data, sink.channels, &mut mono_scratch);
+                    handle_frames(&sink, data, &mono_scratch);
+                },
+                err_fn,
+                None,
+            )
+        }
+        SampleFormat::I16 => {
+            let mut conv_scratch = Vec::with_capacity(8192);
+            let mut mono_scratch = Vec::with_capacity(4096);
+            device.build_input_stream(
+                &stream_config,
+                move |data: &[i16], _| {
+                    if data.is_empty() {
+                        return;
+                    }
+                    conv_scratch.clear();
+                    conv_scratch.extend(data.iter().map(|&sample| sample as f32 / 32768.0));
+                    downmix_interleaved_into(&conv_scratch, sink.channels, &mut mono_scratch);
+                    handle_frames(&sink, &conv_scratch, &mono_scratch);
+                },
+                err_fn,
+                None,
+            )
+        }
+        SampleFormat::U16 => {
+            let mut conv_scratch = Vec::with_capacity(8192);
+            let mut mono_scratch = Vec::with_capacity(4096);
+            device.build_input_stream(
+                &stream_config,
+                move |data: &[u16], _| {
+                    if data.is_empty() {
+                        return;
+                    }
+                    conv_scratch.clear();
+                    conv_scratch.extend(
+                        data.iter()
+                            .map(|&sample| (sample as f32 - 32768.0) / 32768.0),
+                    );
+                    downmix_interleaved_into(&conv_scratch, sink.channels, &mut mono_scratch);
+                    handle_frames(&sink, &conv_scratch, &mono_scratch);
+                },
+                err_fn,
+                None,
+            )
+        }
         _ => {
             return Err(format!(
                 "Unsupported audio sample format: {:?}",
@@ -626,6 +674,8 @@ impl AudioRecorder {
             take_counter: 0,
             last_timing: None,
             long: LongCaptureState::default(),
+            drain_scratch: Vec::with_capacity(96_000),
+            onboard_drain_scratch: Vec::with_capacity(48_000),
             chunk_soft_bytes: chunker::SOFT_REQUEST_BYTES,
             chunk_hard_bytes: chunker::HARD_REQUEST_BYTES,
         };
@@ -658,6 +708,17 @@ impl AudioRecorder {
 
     fn meters(&self) -> Meters {
         Meters {
+            energy: Arc::clone(&self.live_energy_raw),
+            low: Arc::clone(&self.live_low_raw),
+            mid: Arc::clone(&self.live_mid_raw),
+            high: Arc::clone(&self.live_high_raw),
+        }
+    }
+
+    /// Returns a cloneable, lock-free handle to the live acoustic formants.
+    pub fn live_meters(&self) -> LockFreeMeters {
+        LockFreeMeters {
+            is_recording: Arc::clone(&self.is_recording),
             energy: Arc::clone(&self.live_energy_raw),
             low: Arc::clone(&self.live_low_raw),
             mid: Arc::clone(&self.live_mid_raw),
@@ -1022,15 +1083,19 @@ impl AudioRecorder {
 
         match self.mode {
             CaptureMode::DualMicSplice => {
-                let headset_raw = {
+                self.drain_scratch.clear();
+                {
                     let mut buf = self
                         .buffer
                         .lock()
                         .map_err(|_| "Failed to acquire audio buffer lock".to_string())?;
-                    std::mem::take(&mut *buf)
-                };
-                if !headset_raw.is_empty() && self.source_sample_rate > 0 {
-                    let mono = downmix_interleaved_to_mono(&headset_raw, self.source_channels);
+                    if !buf.is_empty() {
+                        self.drain_scratch.extend_from_slice(&buf);
+                        buf.clear();
+                    }
+                }
+                if !self.drain_scratch.is_empty() && self.source_sample_rate > 0 {
+                    let mono = downmix_interleaved_to_mono(&self.drain_scratch, self.source_channels);
                     let resampled =
                         resample_linear(&mono, self.source_sample_rate, TARGET_SAMPLE_RATE);
                     let pcm = float_to_pcm16(&resampled);
@@ -1044,10 +1109,10 @@ impl AudioRecorder {
                 }
 
                 if let Some(bridge) = &self.onboard {
-                    let onboard_raw = bridge.take_audio();
-                    if !onboard_raw.is_empty() && bridge.sample_rate > 0 {
+                    bridge.take_audio_into(&mut self.onboard_drain_scratch);
+                    if !self.onboard_drain_scratch.is_empty() && bridge.sample_rate > 0 {
                         let resampled = resample_linear(
-                            &onboard_raw,
+                            &self.onboard_drain_scratch,
                             bridge.sample_rate,
                             TARGET_SAMPLE_RATE,
                         );
@@ -1065,15 +1130,19 @@ impl AudioRecorder {
                 let _ = self.try_finalize_dual_splice();
             }
             _ => {
-                let raw = {
+                self.drain_scratch.clear();
+                {
                     let mut buf = self
                         .buffer
                         .lock()
                         .map_err(|_| "Failed to acquire audio buffer lock".to_string())?;
-                    std::mem::take(&mut *buf)
-                };
-                if !raw.is_empty() && self.source_sample_rate > 0 {
-                    let mono = downmix_interleaved_to_mono(&raw, self.source_channels);
+                    if !buf.is_empty() {
+                        self.drain_scratch.extend_from_slice(&buf);
+                        buf.clear();
+                    }
+                }
+                if !self.drain_scratch.is_empty() && self.source_sample_rate > 0 {
+                    let mono = downmix_interleaved_to_mono(&self.drain_scratch, self.source_channels);
                     let resampled =
                         resample_linear(&mono, self.source_sample_rate, TARGET_SAMPLE_RATE);
                     let pcm = float_to_pcm16(&resampled);
@@ -1327,24 +1396,28 @@ impl AudioRecorder {
         }
 
         // Legacy path: no long-form state was armed.
-        let raw_samples = {
+        self.drain_scratch.clear();
+        {
             let mut buf = self
                 .buffer
                 .lock()
                 .map_err(|_| "Failed to acquire audio buffer lock".to_string())?;
-            std::mem::take(&mut *buf)
-        };
+            if !buf.is_empty() {
+                self.drain_scratch.extend_from_slice(&buf);
+                buf.clear();
+            }
+        }
         timing.headset_duration_ms = duration_ms(
-            raw_samples.len(),
+            self.drain_scratch.len(),
             self.source_channels,
             self.source_sample_rate,
         );
-        if raw_samples.is_empty() {
+        if self.drain_scratch.is_empty() {
             println!("[Audio Recorder] Discarded: Buffer is empty");
             self.finish_timing(timing, finalize_start);
             return Ok(None);
         }
-        let mono_f32 = downmix_interleaved_to_mono(&raw_samples, self.source_channels);
+        let mono_f32 = downmix_interleaved_to_mono(&self.drain_scratch, self.source_channels);
         let resampled = resample_linear(&mono_f32, self.source_sample_rate, TARGET_SAMPLE_RATE);
         self.finalize_mono(resampled, timing, finalize_start)
     }
@@ -1468,31 +1541,46 @@ impl AudioRecorder {
 
         // Legacy path: no long-form state was armed (should only happen for a
         // recorder constructed before the normalized stream existed).
-        let bt_raw = {
+        self.drain_scratch.clear();
+        {
             let mut buf = self
                 .buffer
                 .lock()
                 .map_err(|_| "Failed to acquire audio buffer lock".to_string())?;
-            std::mem::take(&mut *buf)
-        };
-        let (onboard_raw, onboard_rate) = match &self.onboard {
-            Some(bridge) => (bridge.take_audio(), bridge.sample_rate),
-            None => (Vec::new(), 0),
+            if !buf.is_empty() {
+                self.drain_scratch.extend_from_slice(&buf);
+                buf.clear();
+            }
+        }
+        let onboard_rate = if let Some(bridge) = &self.onboard {
+            bridge.take_audio_into(&mut self.onboard_drain_scratch);
+            bridge.sample_rate
+        } else {
+            self.onboard_drain_scratch.clear();
+            0
         };
 
-        timing.onboard_duration_ms = duration_ms(onboard_raw.len(), 1, onboard_rate);
-        timing.headset_duration_ms =
-            duration_ms(bt_raw.len(), self.source_channels, self.source_sample_rate);
+        timing.onboard_duration_ms =
+            duration_ms(self.onboard_drain_scratch.len(), 1, onboard_rate);
+        timing.headset_duration_ms = duration_ms(
+            self.drain_scratch.len(),
+            self.source_channels,
+            self.source_sample_rate,
+        );
 
-        let onboard_16k = if onboard_raw.is_empty() {
+        let onboard_16k = if self.onboard_drain_scratch.is_empty() {
             Vec::new()
         } else {
-            resample_linear(&onboard_raw, onboard_rate, TARGET_SAMPLE_RATE)
+            resample_linear(
+                &self.onboard_drain_scratch,
+                onboard_rate,
+                TARGET_SAMPLE_RATE,
+            )
         };
-        let bt_16k = if bt_raw.is_empty() {
+        let bt_16k = if self.drain_scratch.is_empty() {
             Vec::new()
         } else {
-            let mono = downmix_interleaved_to_mono(&bt_raw, self.source_channels);
+            let mono = downmix_interleaved_to_mono(&self.drain_scratch, self.source_channels);
             resample_linear(&mono, self.source_sample_rate, TARGET_SAMPLE_RATE)
         };
 

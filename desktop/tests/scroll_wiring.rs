@@ -517,14 +517,14 @@ fn test_bottom_overscroll_padding_guarantee() {
 
 #[test]
 fn test_word_aware_wrapping_exceeds_naive_division() {
-    use sotto_desktop::smooth_scroll::estimate_card_height;
+    use sotto_desktop::smooth_scroll::{estimate_card_height, CARD_BASE_HEIGHT, LINE_HEIGHT_PX};
     // Sentence with realistic word breaks that force earlier line wraps than naive character division.
     let text = "The quick brown fox jumps over the lazy dog and types words in the dictation studio.";
     // Narrow cpl where word breaks cause wrapping:
     let height = estimate_card_height(text, 25);
     // At cpl 25, 85 chars would naively be (85+24)/25 = 4 lines.
     // Words push it to at least 4 or 5 lines.
-    assert!(height >= 78.0 + 3.0 * 17.0);
+    assert!(height >= CARD_BASE_HEIGHT + 3.0 * LINE_HEIGHT_PX);
 }
 
 #[test]
@@ -654,6 +654,7 @@ fn test_svg_branding_and_desktop_icon_wiring() {
         "assets/icons/sotto-mark-dark.svg",
         "assets/icons/sotto-mark-light.svg",
         "assets/icons/sotto-tray-dark.svg",
+        "assets/icons/sotto-wordmark.svg",
         "assets/icons/sotto.ico",
         "assets/icons/sotto-tray-dark-16.png",
         "assets/icons/sotto-tray-dark-32.png",
@@ -666,7 +667,7 @@ fn test_svg_branding_and_desktop_icon_wiring() {
     assert!(!hud.contains("\"Sotto Studio\""), "Studio header should show Sotto lockup instead of Studio label");
     assert!(hud.contains("brand-logo := HorizontalLayout"), "Studio header brand-logo should be a transparent inline lockup without a boxed background");
     assert!(hud.contains("sotto-tray-dark.svg"), "Studio header should render integrated transparent SVG waveform mark");
-    assert!(hud.contains("\"Sotto\"") && hud.contains("Theme.type-display"), "Studio header should use Playfair Display wordmark for Sotto");
+    assert!(hud.contains("\"Sotto\"") && hud.contains("sotto-wordmark.svg"), "Studio header should use crisp vector SVG wordmark for Sotto");
     assert!(hud.contains("sotto-mark-dark.svg"), "Window icon should use Sotto mark SVG");
 
     assert!(build_rs.contains("assets/icons/sotto.ico"), "Windows resource icon missing from build.rs");

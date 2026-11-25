@@ -92,7 +92,7 @@ export component HistoryCard inherits Rectangle {
                             height: 16px;
                             y: (parent.height - self.height) / 2;
 
-                            if rec-has-icon : Image {
+                            if rec-has-icon : app-icon-img := Image {
                                 source: rec-app-icon;
                                 width: 16px;
                                 height: 16px;
@@ -150,13 +150,25 @@ export component HistoryCard inherits Rectangle {
                     border-color: Theme.line;
 
                     HorizontalLayout {
-                        padding-left: Theme.space-4;
-                        padding-right: Theme.space-4;
+                        padding-left: Theme.space-8;
+                        padding-right: Theme.space-8;
+                        spacing: Theme.space-4;
                         alignment: center;
 
+                        VerticalLayout {
+                            alignment: center;
+                            Image {
+                                source: @image-url("../../assets/icons/clock.svg");
+                                width: 12px;
+                                height: 12px;
+                                colorize: Theme.ink-secondary;
+                                image-fit: contain;
+                            }
+                        }
+
                         Text {
-                            text: "⏱ " + rec-duration-str;
-                            font-size: Theme.type-label.size;
+                            text: rec-duration-str;
+                            font-size: Theme.type-meta.size;
                             color: Theme.ink-secondary;
                             font-family: Theme.font-mono;
                             vertical-alignment: center;
@@ -174,14 +186,33 @@ export component HistoryCard inherits Rectangle {
                 background: root.copied-id == root.rec-id ? Theme.success-dim : (copy-touch.has-hover ? Theme.line : Theme.chrome-bg);
                 border-width: 1px;
                 border-color: root.copied-id == root.rec-id ? Theme.success-deep : (copy-touch.has-hover ? Theme.line-strong : Theme.line);
+                animate background { duration: 120ms; }
+                animate border-color { duration: 120ms; }
 
-                Text {
-                    text: root.copied-id == root.rec-id ? "✓ Copied" : "⧉ Copy";
-                    font-size: Theme.type-label.size;
-                    font-weight: 500;
-                    color: root.copied-id == root.rec-id ? Theme.success : (copy-touch.has-hover ? Theme.white : Theme.ink-secondary);
-                    horizontal-alignment: center;
-                    vertical-alignment: center;
+                HorizontalLayout {
+                    alignment: center;
+                    spacing: Theme.space-4;
+
+                    VerticalLayout {
+                        alignment: center;
+                        Image {
+                            source: root.copied-id == root.rec-id
+                                ? @image-url("../../assets/icons/check.svg")
+                                : @image-url("../../assets/icons/copy.svg");
+                            width: 12px;
+                            height: 12px;
+                            colorize: root.copied-id == root.rec-id ? Theme.success : (copy-touch.has-hover ? Theme.white : Theme.ink-secondary);
+                            image-fit: contain;
+                        }
+                    }
+
+                    Text {
+                        text: root.copied-id == root.rec-id ? "Copied" : "Copy";
+                        font-size: Theme.type-label.size;
+                        font-weight: 500;
+                        color: root.copied-id == root.rec-id ? Theme.success : (copy-touch.has-hover ? Theme.white : Theme.ink-secondary);
+                        vertical-alignment: center;
+                    }
                 }
 
                 copy-touch := TouchArea {

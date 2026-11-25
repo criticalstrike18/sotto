@@ -43,7 +43,7 @@ export global Theme {
     // --- Text ink ---
     out property <color> ink-primary: #fafafa;
     out property <color> ink-secondary: #a1a1aa;
-    out property <color> ink-muted: #71717a;
+    out property <color> ink-muted: #8b8b96;
     out property <color> ink-faint: #52525b;
     out property <color> ink-alt: #e4e4e7;
     out property <color> ink-inverse: #09090b;
@@ -79,6 +79,7 @@ export global Theme {
     out property <color> stage-slate: #1e2025;
 
     // --- Standardized Spacing Scale (Micro 2/4/8/12 & Macro 16/24/32/48) ---
+    out property <length> space-0: 0px;
     out property <length> space-2: 2px;
     out property <length> space-4: 4px;
     out property <length> space-8: 8px;
@@ -88,33 +89,34 @@ export global Theme {
     out property <length> space-32: 32px;
     out property <length> space-48: 48px;
 
-    // --- Radii ---
+    // --- Radii & Layout Bounds ---
     out property <length> radius-sm: 4px;
     out property <length> radius-md: 6px;
     out property <length> radius-lg: 8px;
     out property <length> radius-pill: 9999px;
+    out property <length> studio-max-width: 1200px;
 
     // --- Type Families ---
-    out property <string> font-mono: "Cascadia Code, Consolas, monospace";
-    out property <string> font-sans: "DM Sans";
+    out property <string> font-mono: "Consolas";
+    out property <string> font-sans: "Inter";
     out property <string> font-serif: "Playfair Display";
 
     // Text hierarchy (strictly standardized to 28px, 22px, 14px, 12px):
     // display  - App / Page title (H1)    28 / 700 (Playfair Display)
-    // hero     - Section Header (H2)      22 / 600 (Playfair Display)
-    // body     - Dictation transcripts    14 / 600 (DM Sans)
-    // title    - Card & section titles    14 / 600 (DM Sans)
-    // label    - Buttons, tabs, inputs    12 / 600 (DM Sans)
+    // hero     - Section Header (H2)      22 / 600 (Inter)
+    // body     - Dictation transcripts    14 / 400 (Inter)
+    // title    - Card & section titles    14 / 600 (Inter)
+    // label    - Buttons, tabs, inputs    12 / 600 (Inter)
     // meta     - Timestamps, durations    12 / 500 mono
-    // eyebrow  - Section headers          12 / 600 mono
-    // caption  - Badges, status, hints    12 / 600 (DM Sans)
+    // eyebrow  - Section headers          12 / 600 (Inter tracked)
+    // caption  - Badges, status, hints    12 / 500 (Inter)
     out property <TypeRole> type-display: { size: 28px, weight: 700, family: "Playfair Display" };
-    out property <TypeRole> type-hero: { size: 22px, weight: 600, family: "Playfair Display" };
-    out property <TypeRole> type-body: { size: 14px, weight: 400, family: "DM Sans" };
-    out property <TypeRole> type-title: { size: 14px, weight: 600, family: "DM Sans" };
-    out property <TypeRole> type-label: { size: 12px, weight: 600, family: "DM Sans" };
-    out property <TypeRole> type-meta: { size: 12px, weight: 500, family: "Cascadia Code, Consolas, monospace" };
-    out property <TypeRole> type-eyebrow: { size: 12px, weight: 600, family: "Cascadia Code, Consolas, monospace" };
-    out property <TypeRole> type-caption: { size: 12px, weight: 600, family: "DM Sans" };
+    out property <TypeRole> type-hero: { size: 22px, weight: 600, family: "Inter" };
+    out property <TypeRole> type-body: { size: 14px, weight: 400, family: "Inter" };
+    out property <TypeRole> type-title: { size: 14px, weight: 600, family: "Inter" };
+    out property <TypeRole> type-label: { size: 12px, weight: 600, family: "Inter" };
+    out property <TypeRole> type-meta: { size: 12px, weight: 500, family: "Consolas" };
+    out property <TypeRole> type-eyebrow: { size: 12px, weight: 600, family: "Inter" };
+    out property <TypeRole> type-caption: { size: 12px, weight: 500, family: "Inter" };
 }
 

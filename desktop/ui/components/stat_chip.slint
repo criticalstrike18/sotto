@@ -8,6 +8,8 @@ import { Theme } from "theme.slint";
 
 export component StatChip inherits Rectangle {
     in property <string> icon: "";
+    in property <image> icon-svg;
+    in property <bool> has-svg: false;
     in property <string> label: "";
     in property <bool> accent: false;
     in property <length> chip-height: 26px;
@@ -28,14 +30,33 @@ export component StatChip inherits Rectangle {
 
     chip-row := HorizontalLayout {
         alignment: center;
-        padding-left: Theme.space-8;
-        padding-right: Theme.space-8;
-        spacing: Theme.space-4;
+        padding-left: Theme.space-12;
+        padding-right: Theme.space-12;
+        spacing: Theme.space-0;
+
+        if root.has-svg : VerticalLayout {
+            alignment: center;
+            Image {
+                source: root.icon-svg;
+                width: 13px;
+                height: 13px;
+                colorize: root.accent ? Theme.accent : Theme.ink-secondary;
+                image-fit: contain;
+            }
+        }
 
         icon-text := Text {
+            visible: !root.has-svg;
+            width: root.has-svg ? Theme.space-0 : self.preferred-width;
             text: root.icon;
             font-size: Theme.type-label.size;
+            color: root.accent ? Theme.accent : Theme.ink-secondary;
             vertical-alignment: center;
+        }
+
+        if root.has-svg || root.icon != "" : Rectangle {
+            width: Theme.space-8;
+            background: transparent;
         }
 
         label-text := Text {

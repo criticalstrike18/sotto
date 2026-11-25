@@ -10,7 +10,8 @@ use windows_sys::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, 
 use windows_sys::Win32::System::Threading::GetCurrentThreadId;
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
     keybd_event, SendInput, SetFocus, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP,
-    KEYEVENTF_UNICODE, VK_CONTROL, VK_LWIN, VK_MENU, VK_RWIN, VK_SHIFT, VK_V,
+    KEYEVENTF_UNICODE, VK_CONTROL, VK_LCONTROL, VK_LMENU, VK_LSHIFT, VK_LWIN, VK_MENU,
+    VK_RCONTROL, VK_RMENU, VK_RSHIFT, VK_RWIN, VK_SHIFT, VK_V,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     GetForegroundWindow, GetWindowThreadProcessId, IsIconic, SetForegroundWindow, ShowWindow,
@@ -422,10 +423,18 @@ fn send_ctrl_combo(vk: u16) -> Result<(), String> {
 
     let inputs = [
         // Force-release any modifier keys the user is still holding from the hotkey
+        // (release both generic and left/right specific virtual keys cleanly)
         key_input_vk(VK_LWIN, true),
         key_input_vk(VK_RWIN, true),
+        key_input_vk(VK_LMENU, true),
+        key_input_vk(VK_RMENU, true),
         key_input_vk(VK_MENU, true),
+        key_input_vk(VK_LSHIFT, true),
+        key_input_vk(VK_RSHIFT, true),
         key_input_vk(VK_SHIFT, true),
+        key_input_vk(VK_LCONTROL, true),
+        key_input_vk(VK_RCONTROL, true),
+        key_input_vk(VK_CONTROL, true),
         // Press Ctrl
         key_input_vk(VK_CONTROL, false),
         // Press Key
@@ -449,8 +458,15 @@ fn send_ctrl_combo(vk: u16) -> Result<(), String> {
         unsafe {
             keybd_event(VK_LWIN as u8, 0, KEYEVENTF_KEYUP, 0);
             keybd_event(VK_RWIN as u8, 0, KEYEVENTF_KEYUP, 0);
+            keybd_event(VK_LMENU as u8, 0, KEYEVENTF_KEYUP, 0);
+            keybd_event(VK_RMENU as u8, 0, KEYEVENTF_KEYUP, 0);
             keybd_event(VK_MENU as u8, 0, KEYEVENTF_KEYUP, 0);
+            keybd_event(VK_LSHIFT as u8, 0, KEYEVENTF_KEYUP, 0);
+            keybd_event(VK_RSHIFT as u8, 0, KEYEVENTF_KEYUP, 0);
             keybd_event(VK_SHIFT as u8, 0, KEYEVENTF_KEYUP, 0);
+            keybd_event(VK_LCONTROL as u8, 0, KEYEVENTF_KEYUP, 0);
+            keybd_event(VK_RCONTROL as u8, 0, KEYEVENTF_KEYUP, 0);
+            keybd_event(VK_CONTROL as u8, 0, KEYEVENTF_KEYUP, 0);
             keybd_event(VK_CONTROL as u8, 0, 0, 0);
             keybd_event(vk as u8, 0, 0, 0);
             keybd_event(vk as u8, 0, KEYEVENTF_KEYUP, 0);
@@ -465,8 +481,14 @@ fn release_modifier_keys() -> Result<(), String> {
     let inputs = [
         key_input_vk(VK_LWIN, true),
         key_input_vk(VK_RWIN, true),
+        key_input_vk(VK_LMENU, true),
+        key_input_vk(VK_RMENU, true),
         key_input_vk(VK_MENU, true),
+        key_input_vk(VK_LSHIFT, true),
+        key_input_vk(VK_RSHIFT, true),
         key_input_vk(VK_SHIFT, true),
+        key_input_vk(VK_LCONTROL, true),
+        key_input_vk(VK_RCONTROL, true),
         key_input_vk(VK_CONTROL, true),
     ];
 
@@ -482,8 +504,14 @@ fn release_modifier_keys() -> Result<(), String> {
         unsafe {
             keybd_event(VK_LWIN as u8, 0, KEYEVENTF_KEYUP, 0);
             keybd_event(VK_RWIN as u8, 0, KEYEVENTF_KEYUP, 0);
+            keybd_event(VK_LMENU as u8, 0, KEYEVENTF_KEYUP, 0);
+            keybd_event(VK_RMENU as u8, 0, KEYEVENTF_KEYUP, 0);
             keybd_event(VK_MENU as u8, 0, KEYEVENTF_KEYUP, 0);
+            keybd_event(VK_LSHIFT as u8, 0, KEYEVENTF_KEYUP, 0);
+            keybd_event(VK_RSHIFT as u8, 0, KEYEVENTF_KEYUP, 0);
             keybd_event(VK_SHIFT as u8, 0, KEYEVENTF_KEYUP, 0);
+            keybd_event(VK_LCONTROL as u8, 0, KEYEVENTF_KEYUP, 0);
+            keybd_event(VK_RCONTROL as u8, 0, KEYEVENTF_KEYUP, 0);
             keybd_event(VK_CONTROL as u8, 0, KEYEVENTF_KEYUP, 0);
         }
     }

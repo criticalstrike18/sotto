@@ -416,15 +416,15 @@ fn test_bg_modes_match_slint_buttons() {
 
 #[test]
 fn test_pill_widths_are_integer_and_stable() {
-    // Fractional widths blur text on 1x displays; table mirrors hud.slint:46-61.
+    // Fractional widths blur text on 1x displays; table mirrors hud.slint:54-69.
     for (si, row) in PILL_WIDTHS.iter().enumerate() {
         for (oi, w) in row.iter().enumerate() {
             assert!((w - w.round()).abs() < 1e-6, "state {si} opt {oi} width {w} must be integer px");
-            assert!(*w >= 44.0 && *w <= 110.0, "width {w} outside design range");
+            assert!(*w >= 44.0 && *w <= 112.0, "width {w} outside design range");
         }
     }
     assert_eq!(PILL_WIDTHS[0], [48.0, 44.0, 56.0]);
-    assert_eq!(PILL_WIDTHS[1], [110.0, 84.0, 100.0]);
+    assert_eq!(PILL_WIDTHS[1], [112.0, 84.0, 100.0]);
 }
 
 #[test]
@@ -705,7 +705,6 @@ fn test_customization_smooth_scroller_properties() {
 // ============================================================================
 
 #[test]
-#[ignore = "KNOWN-ISSUE: muted #71717a on card #111215 is ~3.8:1, below WCAG AA 4.5 for 11px metadata"]
 fn test_known_muted_text_contrast_on_card() {
     let c = contrast_ratio(INK_MUTED, CARD_BG).unwrap();
     assert!(c >= 4.5, "muted on card = {c:.2}");
@@ -719,7 +718,6 @@ fn test_known_body_text_contrast_on_light_mode() {
 }
 
 #[test]
-#[ignore = "KNOWN-ISSUE: pill widths 110px/74px land on half-pixels at 125% scale (most common Windows scale)"]
 fn test_known_pill_widths_crisp_at_125p() {
     for row in PILL_WIDTHS.iter() {
         for w in row.iter() {

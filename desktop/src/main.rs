@@ -554,16 +554,71 @@ pub static SHARED_TRANSCRIBER: std::sync::Mutex<Option<router::SharedTranscriber
 pub static GLOBAL_POST_PROCESSOR: std::sync::Mutex<Option<std::sync::Arc<sotto_desktop::cleaner::PostProcessor>>> =
     std::sync::Mutex::new(None);
 
-/// Weak handle to the live recorder, so the Customization tab can apply a
-/// capture-mode change without threading the recorder through every UI call.
+/// Weak handle to the live recorder, retained for diagnostics while live
+/// lifecycle commands flow through `GLOBAL_AUDIO_CTRL`.
 pub static GLOBAL_RECORDER: std::sync::Mutex<
     Option<std::sync::Weak<std::sync::Mutex<Option<audio::recorder::AudioRecorder>>>>,
 > = std::sync::Mutex::new(None);
 
-/// Active long-recording session (pause-aware chunk pump + ordered transcriber).
-/// Kept app-global so every trigger path starts/stops the same take.
-static LONG_FORM_SESSION: std::sync::Mutex<Option<sotto_desktop::long_form::LongFormSession>> =
+enum AudioCtrlCmd {
+    Start {
+        my_gen: u64,
+        pill_weak: slint::Weak<FloatingPillWindow>,
+        engine_state: Arc<AtomicU8>,
+        recording_start: Arc<Mutex<Option<Instant>>>,
+        dictation_gen: Arc<std::sync::atomic::AtomicU64>,
+    },
+    Cancel {
+        play_stop_chime: bool,
+    },
+    Stop {
+        my_gen: u64,
+        pill_weak: slint::Weak<FloatingPillWindow>,
+        transcriber: router::SharedTranscriber,
+        engine_state: Arc<AtomicU8>,
+        target_hwnd: isize,
+        history_queue: Arc<AsyncHistoryQueue>,
+        safety_net: Arc<audio::AudioSafetyNet>,
+        post_processor: Arc<sotto_desktop::cleaner::PostProcessor>,
+        dictation_gen: Arc<std::sync::atomic::AtomicU64>,
+    },
+    SetCaptureMode(config::CaptureMode),
+    Shutdown {
+        drop_recorder: bool,
+        ack: std::sync::mpsc::Sender<()>,
+    },
+}
+
+static GLOBAL_AUDIO_CTRL: std::sync::Mutex<Option<std::sync::mpsc::Sender<AudioCtrlCmd>>> =
     std::sync::Mutex::new(None);
+
+fn send_audio_ctrl(cmd: AudioCtrlCmd) -> bool {
+    if let Ok(guard) = GLOBAL_AUDIO_CTRL.lock() {
+        if let Some(ref tx) = *guard {
+            return tx.send(cmd).is_ok();
+        }
+    }
+    false
+}
+
+fn sync_hotkey_recording(recording: bool) {
+    #[cfg(target_os = "windows")]
+    if let Ok(guard) = GLOBAL_HOTKEY_MGR.lock() {
+        if let Some(ref mgr) = *guard {
+            mgr.set_recording(recording);
+        }
+    }
+}
+
+fn reset_pill_to_idle(pill_weak: slint::Weak<FloatingPillWindow>) {
+    let _ = slint::invoke_from_event_loop(move || {
+        if let Some(p) = pill_weak.upgrade() {
+            p.set_active_state(0);
+            p.set_timer_sec(0);
+            p.set_timer_text("0:00".into());
+        }
+    });
+}
 
 /// High-performance multi-threaded Tokio runtime for background AI LLM post-processing.
 static SHARED_TOKIO: std::sync::OnceLock<tokio::runtime::Runtime> = std::sync::OnceLock::new();
@@ -596,8 +651,10 @@ unsafe extern "system" fn studio_subclass_wndproc(
         }
         WM_SIZE => {
             if !IS_SWITCHING_TABS.load(std::sync::atomic::Ordering::SeqCst) {
-                let _ = slint::invoke_from_event_loop(|| {
+                let is_zoomed = IsZoomed(hwnd) != 0;
+                let _ = slint::invoke_from_event_loop(move || {
                     let _ = with_studio(|s| {
+                        s.set_is_fullscreen(is_zoomed);
                         sync_studio_dimensions(s, true);
                     });
                 });
@@ -1292,21 +1349,28 @@ fn bring_studio_to_front(studio: &StudioWindow) {
                     );
                     let mut rect = RECT { left: 0, top: 0, right: 0, bottom: 0 };
                     GetWindowRect(hwnd, &mut rect);
-                    let w = rect.right - rect.left;
-                    let h = rect.bottom - rect.top;
+                    let scale = win.scale_factor().max(1.0);
+                    let margin = (24.0 * scale).round() as i32;
                     let work_w = work_area.right - work_area.left;
                     let work_h = work_area.bottom - work_area.top;
-                    let x = work_area.left + (work_w - w) / 2;
-                    let y = work_area.top + (work_h - h) / 2;
+                    let max_w = (work_w - margin).max((760.0 * scale).round() as i32).min(work_w);
+                    let max_h = (work_h - margin).max((600.0 * scale).round() as i32).min(work_h);
+                    let raw_w = rect.right - rect.left;
+                    let raw_h = rect.bottom - rect.top;
+                    let w = raw_w.min(max_w);
+                    let h = raw_h.min(max_h);
+                    let x = work_area.left + ((work_w - w) / 2).max(0);
+                    let y = work_area.top + ((work_h - h) / 2).max(0);
+                    let size_flags = if w != raw_w || h != raw_h { 0 } else { SWP_NOSIZE };
 
                     SetWindowPos(
                         hwnd,
                         0 as _,
                         x,
                         y,
-                        0,
-                        0,
-                        SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED,
+                        w,
+                        h,
+                        size_flags | SWP_NOZORDER | SWP_FRAMECHANGED,
                     );
                     ShowWindow(hwnd, SW_RESTORE);
                     SetForegroundWindow(hwnd);
@@ -2811,26 +2875,10 @@ fn wire_studio_window(
             audio::chime::set_enabled(cfg.chimes_enabled);
             media::set_enabled(cfg.media_pause_enabled);
 
-            // Apply the capture strategy to the live recorder immediately. The
-            // recorder refuses the change mid-take, so it can never interrupt
-            // audio; in that case it simply applies on the next Save.
+            // Apply the capture strategy on the audio control worker so WASAPI
+            // setup/teardown never blocks the Slint UI thread.
             if engine_state_sc.load(Ordering::SeqCst) == 0 {
-                if let Ok(guard) = GLOBAL_RECORDER.lock() {
-                    if let Some(weak) = guard.as_ref() {
-                        if let Some(rec_arc) = weak.upgrade() {
-                            if let Ok(mut rec_guard) = rec_arc.lock() {
-                                if let Some(rec) = rec_guard.as_mut() {
-                                    if let Err(e) = rec.set_capture_mode(cfg.capture_mode) {
-                                        eprintln!(
-                                            "[Audio Recorder] Capture mode not applied: {}",
-                                            e
-                                        );
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
+                send_audio_ctrl(AudioCtrlCmd::SetCaptureMode(cfg.capture_mode));
             }
 
             // Apply immediately to live floating pill
@@ -2913,19 +2961,21 @@ fn wire_studio_window(
 
             #[cfg(target_os = "windows")]
             if let Some(hwnd) = hwnd_opt {
-                let w = cur_rect.right - cur_rect.left;
-                let h = cur_rect.bottom - cur_rect.top;
-                if w > 0 && h > 0 {
-                    unsafe {
-                        SetWindowPos(
-                            hwnd,
-                            std::ptr::null_mut(),
-                            cur_rect.left,
-                            cur_rect.top,
-                            w,
-                            h,
-                            SWP_NOZORDER | SWP_NOACTIVATE,
-                        );
+                unsafe {
+                    if windows_sys::Win32::UI::WindowsAndMessaging::IsZoomed(hwnd) == 0 {
+                        let w = cur_rect.right - cur_rect.left;
+                        let h = cur_rect.bottom - cur_rect.top;
+                        if w > 0 && h > 0 {
+                            SetWindowPos(
+                                hwnd,
+                                std::ptr::null_mut(),
+                                cur_rect.left,
+                                cur_rect.top,
+                                w,
+                                h,
+                                SWP_NOZORDER | SWP_NOACTIVATE,
+                            );
+                        }
                     }
                 }
             }
@@ -3118,10 +3168,443 @@ fn toggle_studio_window(
     }
 }
 
-/// Initiates voice dictation (State 0 -> State 1: Listening)
+fn spawn_audio_ctrl_worker(
+    recorder: Arc<Mutex<Option<audio::recorder::AudioRecorder>>>,
+) -> std::sync::mpsc::Sender<AudioCtrlCmd> {
+    let (tx, rx) = std::sync::mpsc::channel::<AudioCtrlCmd>();
+    std::thread::Builder::new()
+        .name("sotto-audio-ctrl".to_string())
+        .spawn(move || {
+            let mut active_session: Option<sotto_desktop::long_form::LongFormSession> = None;
+            let mut active_capture = false;
+
+            while let Ok(cmd) = rx.recv() {
+                match cmd {
+                    AudioCtrlCmd::Start {
+                        my_gen,
+                        pill_weak,
+                        engine_state,
+                        recording_start,
+                        dictation_gen,
+                    } => {
+                        if dictation_gen.load(Ordering::SeqCst) != my_gen
+                            || engine_state.load(Ordering::SeqCst) != 1
+                        {
+                            continue;
+                        }
+
+                        media::pause_for_dictation();
+
+                        let start_res = match recorder.lock() {
+                            Ok(mut rec_guard) => match rec_guard.as_mut() {
+                                Some(rec) => rec.start(),
+                                None => Err("No audio input device initialized".to_string()),
+                            },
+                            Err(_) => Err("Recorder mutex poisoned".to_string()),
+                        };
+
+                        if let Err(e) = start_res {
+                            eprintln!("[Audio Pipeline Error] Failed to start recorder: {}", e);
+                            media::resume_immediately();
+                            active_capture = false;
+                            if dictation_gen.load(Ordering::SeqCst) == my_gen {
+                                let _ = engine_state.compare_exchange(
+                                    1,
+                                    0,
+                                    Ordering::SeqCst,
+                                    Ordering::SeqCst,
+                                );
+                                sync_hotkey_recording(false);
+                                if let Ok(mut start_guard) = recording_start.lock() {
+                                    *start_guard = None;
+                                }
+                                reset_pill_to_idle(pill_weak);
+                            }
+                            continue;
+                        }
+
+                        active_capture = true;
+
+                        // If Stop or Cancel arrived while WASAPI was initializing, skip arming
+                        // long-form chunking / start chime and let the queued command unwind cleanly.
+                        if dictation_gen.load(Ordering::SeqCst) != my_gen
+                            || engine_state.load(Ordering::SeqCst) != 1
+                        {
+                            continue;
+                        }
+
+                        let transcriber_snapshot =
+                            SHARED_TRANSCRIBER.lock().ok().and_then(|guard| {
+                                guard
+                                    .as_ref()
+                                    .and_then(|shared| shared.lock().ok().map(|t| t.clone()))
+                            });
+                        if let Some(transcriber_snapshot) = transcriber_snapshot {
+                            if let Some(stale) = active_session.take() {
+                                stale.cancel();
+                            }
+                            active_session = Some(sotto_desktop::long_form::LongFormSession::start(
+                                Arc::clone(&recorder),
+                                transcriber_snapshot,
+                            ));
+                        } else {
+                            eprintln!("[LongForm] No transcriber snapshot; long takes will not be chunked");
+                        }
+
+                        audio::chime::play_start();
+                    }
+                    AudioCtrlCmd::Cancel { play_stop_chime } => {
+                        if let Some(session) = active_session.take() {
+                            session.cancel();
+                        }
+                        if active_capture {
+                            if let Ok(mut rec_guard) = recorder.lock() {
+                                if let Some(rec) = rec_guard.as_mut() {
+                                    let _ = rec.stop();
+                                }
+                            }
+                            active_capture = false;
+                        }
+                        if play_stop_chime {
+                            audio::chime::play_stop();
+                        }
+                        media::resume_immediately();
+                    }
+                    AudioCtrlCmd::Stop {
+                        my_gen,
+                        pill_weak,
+                        transcriber,
+                        engine_state,
+                        target_hwnd,
+                        history_queue,
+                        safety_net,
+                        post_processor,
+                        dictation_gen,
+                    } => {
+                        if dictation_gen.load(Ordering::SeqCst) != my_gen {
+                            if let Some(session) = active_session.take() {
+                                session.cancel();
+                            }
+                            if active_capture {
+                                if let Ok(mut rec_guard) = recorder.lock() {
+                                    if let Some(rec) = rec_guard.as_mut() {
+                                        let _ = rec.stop();
+                                    }
+                                }
+                                active_capture = false;
+                            }
+                            media::resume_immediately();
+                            continue;
+                        }
+
+                        let session_opt = active_session.take();
+                        let was_active = std::mem::replace(&mut active_capture, false);
+
+                        if !was_active && session_opt.is_none() {
+                            let _ = engine_state.compare_exchange(
+                                2,
+                                0,
+                                Ordering::SeqCst,
+                                Ordering::SeqCst,
+                            );
+                            sync_hotkey_recording(false);
+                            media::resume_immediately();
+                            reset_pill_to_idle(pill_weak);
+                            continue;
+                        }
+
+                        let session_finish = session_opt.map(|session| session.finish());
+                        let payload_opt = match session_finish {
+                            Some(sotto_desktop::long_form::LongFormFinish::Chunked(resolution)) => {
+                                if dictation_gen.load(Ordering::SeqCst) != my_gen {
+                                    media::resume_immediately();
+                                    continue;
+                                }
+                                let transcriber_snapshot = match transcriber.lock() {
+                                    Ok(guard) => guard.clone(),
+                                    Err(poisoned) => poisoned.into_inner().clone(),
+                                };
+                                audio::chime::play_stop();
+                                spawn_long_form_resolution(
+                                    resolution,
+                                    transcriber_snapshot,
+                                    pill_weak,
+                                    engine_state,
+                                    target_hwnd,
+                                    history_queue,
+                                    safety_net,
+                                    post_processor,
+                                    dictation_gen,
+                                    my_gen,
+                                );
+                                continue;
+                            }
+                            Some(sotto_desktop::long_form::LongFormFinish::Single(payload)) => payload,
+                            None => {
+                                if let Ok(mut rec_guard) = recorder.lock() {
+                                    if let Some(rec) = rec_guard.as_mut() {
+                                        match rec.stop() {
+                                            Ok(p) => p,
+                                            Err(e) => {
+                                                eprintln!(
+                                                    "[Audio Pipeline Error] Failed to finalize recording: {}",
+                                                    e
+                                                );
+                                                None
+                                            }
+                                        }
+                                    } else {
+                                        None
+                                    }
+                                } else {
+                                    None
+                                }
+                            }
+                        };
+
+                        if dictation_gen.load(Ordering::SeqCst) != my_gen {
+                            media::resume_immediately();
+                            continue;
+                        }
+
+                        audio::chime::play_stop();
+                        dispatch_single_upload(
+                            payload_opt,
+                            pill_weak,
+                            transcriber,
+                            engine_state,
+                            target_hwnd,
+                            history_queue,
+                            safety_net,
+                            post_processor,
+                            dictation_gen,
+                            my_gen,
+                        );
+                    }
+                    AudioCtrlCmd::SetCaptureMode(mode) => {
+                        if !active_capture && active_session.is_none() {
+                            if let Ok(mut rec_guard) = recorder.lock() {
+                                if let Some(rec) = rec_guard.as_mut() {
+                                    if let Err(e) = rec.set_capture_mode(mode) {
+                                        eprintln!(
+                                            "[Audio Recorder] Capture mode not applied: {}",
+                                            e
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    AudioCtrlCmd::Shutdown { drop_recorder, ack } => {
+                        if let Some(session) = active_session.take() {
+                            session.cancel();
+                        }
+                        if let Ok(mut rec_guard) = recorder.lock() {
+                            if active_capture {
+                                if let Some(rec) = rec_guard.as_mut() {
+                                    let _ = rec.stop();
+                                }
+                                active_capture = false;
+                            }
+                            if drop_recorder {
+                                *rec_guard = None;
+                            }
+                        }
+                        let _ = ack.send(());
+                        break;
+                    }
+                }
+            }
+        })
+        .expect("Failed to spawn audio control worker");
+    tx
+}
+
+#[allow(clippy::too_many_arguments)]
+fn dispatch_single_upload(
+    payload_opt: Option<audio::recorder::AudioPayload>,
+    pill_weak: slint::Weak<FloatingPillWindow>,
+    transcriber: router::SharedTranscriber,
+    engine_state: Arc<AtomicU8>,
+    target_hwnd: isize,
+    history_queue: Arc<AsyncHistoryQueue>,
+    safety_net: Arc<audio::AudioSafetyNet>,
+    post_processor: Arc<sotto_desktop::cleaner::PostProcessor>,
+    dictation_gen: Arc<std::sync::atomic::AtomicU64>,
+    my_gen: u64,
+) {
+    match payload_opt {
+        Some(payload) => {
+            println!(
+                "[Audio Pipeline] Captured {}ms audio buffer ({} bytes WAV ready for dispatch)",
+                payload.duration_ms,
+                payload.wav_bytes.len()
+            );
+
+            safety_net.save(payload.wav_bytes.clone(), payload.duration_ms, target_hwnd);
+
+            let transcriber_snapshot = match transcriber.lock() {
+                Ok(guard) => guard.clone(),
+                Err(poisoned) => poisoned.into_inner().clone(),
+            };
+            let groq_for_llm = transcriber_snapshot.groq_client();
+            let gemini_for_llm = transcriber_snapshot.gemini_client();
+            let pill_async = pill_weak;
+            let engine_async = engine_state;
+            let history_async = history_queue;
+            let safety_async = safety_net;
+            let processor_async = post_processor;
+            let dict_gen_async = dictation_gen;
+
+            std::thread::spawn(move || {
+                if dict_gen_async.load(Ordering::SeqCst) != my_gen {
+                    println!("[Pipeline] Transcription aborted: cancelled by user");
+                    return;
+                }
+                match shared_tokio()
+                    .block_on(transcriber_snapshot.transcribe_with_prompt(payload.wav_bytes, None))
+                {
+                    Ok(res) => {
+                        if dict_gen_async.load(Ordering::SeqCst) != my_gen {
+                            println!("[Pipeline] Transcription completed but aborted by cancel trigger");
+                            return;
+                        }
+                        println!(
+                            "[Transcribe Pipeline] Raw Transcript: \"{}\" in {}ms",
+                            res.text, res.latency_ms
+                        );
+                        safety_async.clear();
+
+                        let (app_name, exe_path) = get_process_info_for_hwnd(target_hwnd);
+                        let cleaned_text = if processor_async.get_options().llm_enabled
+                            || processor_async.get_options().mode
+                                == sotto_desktop::cleaner::PostProcessMode::SmartLLM
+                        {
+                            shared_tokio().block_on(processor_async.process_async_with_duration(
+                                &res.text,
+                                Some(&app_name),
+                                groq_for_llm.as_ref(),
+                                gemini_for_llm.as_ref(),
+                                Some(payload.duration_ms),
+                            ))
+                        } else {
+                            processor_async.process_local_with_duration(
+                                &res.text,
+                                Some(&app_name),
+                                Some(payload.duration_ms),
+                            )
+                        };
+
+                        if cleaned_text.is_empty() {
+                            println!(
+                                "[Cleaner] Dropped hallucinated or empty transcript: {:?}",
+                                res.text
+                            );
+                            engine_async.store(0, Ordering::SeqCst);
+                            sync_hotkey_recording(false);
+                            media::resume_after_dictation();
+                            reset_pill_to_idle(pill_async);
+                            return;
+                        }
+                        println!(
+                            "[PostProcessor] Final Transformed Text: \"{}\" (Venue: {})",
+                            cleaned_text, app_name
+                        );
+
+                        engine_async.store(3, Ordering::SeqCst);
+
+                        let p1 = pill_async.clone();
+                        let _ = slint::invoke_from_event_loop(move || {
+                            if let Some(p) = p1.upgrade() {
+                                p.set_active_state(3);
+                            }
+                            wake_pill_anim_timer();
+                            println!("[Pipeline] State -> 3: Success");
+                        });
+
+                        if dict_gen_async.load(Ordering::SeqCst) != my_gen {
+                            println!("[Pipeline] Text injection aborted by cancel trigger");
+                            return;
+                        }
+                        if let Err(e) = inject::inject_text_with_target(&cleaned_text, target_hwnd) {
+                            eprintln!("[Inject Error] Failed to inject text: {}", e);
+                        }
+
+                        media::resume_after_dictation();
+
+                        let _ = app_icon::prewarm_app_icon(&app_name, exe_path.as_deref());
+                        let exe_path_clone = exe_path.clone();
+                        history_async.enqueue_insert(
+                            cleaned_text.clone(),
+                            payload.duration_ms as i32,
+                            app_name,
+                            move |rec| {
+                                let exe_path_ui = exe_path_clone.clone();
+                                let _ = slint::invoke_from_event_loop(move || {
+                                    prepend_studio_history_record(rec, exe_path_ui, "new");
+                                });
+                            },
+                        );
+
+                        std::thread::sleep(Duration::from_millis(400));
+                        if engine_async.load(Ordering::SeqCst) == 3 {
+                            engine_async.store(0, Ordering::SeqCst);
+                            let p_idle = pill_async.clone();
+                            let _ = slint::invoke_from_event_loop(move || {
+                                if let Some(p) = p_idle.upgrade() {
+                                    p.set_active_state(0);
+                                    p.set_timer_sec(0);
+                                    p.set_timer_text("0:00".into());
+                                }
+                                println!("[Pipeline] State -> 0: Idle (Ready)");
+                            });
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("[Transcribe Pipeline Error] {}", e);
+                        engine_async.store(4, Ordering::SeqCst);
+                        sync_hotkey_recording(false);
+                        media::resume_after_dictation();
+
+                        let p1 = pill_async.clone();
+                        let _ = slint::invoke_from_event_loop(move || {
+                            if let Some(p) = p1.upgrade() {
+                                p.set_active_state(4);
+                            }
+                            wake_pill_anim_timer();
+                            println!("[Pipeline] State -> 4: Error (Audio safely buffered in RAM for retry)");
+                        });
+
+                        std::thread::sleep(Duration::from_millis(6000));
+                        if engine_async.load(Ordering::SeqCst) == 4 {
+                            engine_async.store(0, Ordering::SeqCst);
+                            let p_idle = pill_async.clone();
+                            let _ = slint::invoke_from_event_loop(move || {
+                                if let Some(p) = p_idle.upgrade() {
+                                    p.set_active_state(0);
+                                    p.set_timer_sec(0);
+                                    p.set_timer_text("0:00".into());
+                                }
+                                println!("[Pipeline] State -> 0: Idle (Ready, retry buffer preserved)");
+                            });
+                        }
+                    }
+                }
+            });
+        }
+        None => {
+            println!("[Pipeline] Dictation rejected by acoustic filters; resetting to Idle");
+            engine_state.store(0, Ordering::SeqCst);
+            sync_hotkey_recording(false);
+            media::resume_after_dictation();
+            reset_pill_to_idle(pill_weak);
+        }
+    }
+}
+
+/// Initiates voice dictation (State 0 -> State 1: Listening) without blocking the UI thread.
 fn start_dictation(
     pill_weak: &slint::Weak<FloatingPillWindow>,
-    recorder: &Arc<Mutex<Option<audio::recorder::AudioRecorder>>>,
     engine_state: &Arc<AtomicU8>,
     recording_start: &Arc<Mutex<Option<Instant>>>,
     target_hwnd: &Arc<AtomicIsize>,
@@ -3129,12 +3612,14 @@ fn start_dictation(
     dictation_gen: &Arc<std::sync::atomic::AtomicU64>,
 ) {
     inactivity.record_activity();
-    let prev = engine_state.load(Ordering::SeqCst);
-    if prev != 0 {
+    if let Err(prev) = engine_state.compare_exchange(0, 1, Ordering::SeqCst, Ordering::SeqCst) {
+        if prev != 1 {
+            sync_hotkey_recording(false);
+        }
         return;
     }
 
-    dictation_gen.fetch_add(1, Ordering::SeqCst);
+    let my_gen = dictation_gen.fetch_add(1, Ordering::SeqCst) + 1;
 
     // 1. Capture current foreground window before dictation starts
     #[cfg(target_os = "windows")]
@@ -3145,80 +3630,44 @@ fn start_dictation(
         }
     }
 
-    // 1b. Quiet background playback before the microphone opens. The command
-    // is asynchronous; opening the headset stream typically cuts A2DP at the
-    // same moment, and the SMTC pause usually lands first.
-    media::pause_for_dictation();
-
-    // 2. Start audio capture directly into RAM
-    if let Ok(mut rec_guard) = recorder.lock() {
-        if let Some(rec) = rec_guard.as_mut() {
-            if let Err(e) = rec.start() {
-                eprintln!("[Audio Pipeline Error] Failed to start recorder: {}", e);
-                media::resume_immediately();
-                return;
-            }
-        }
-    }
-
-    // 2b. Arm the pause-aware long-recording pump. Sealed chunks are
-    // transcribed while the user keeps talking; short takes still use the
-    // existing single-upload path when stop() finds no sealed chunk.
-    let transcriber_snapshot = SHARED_TRANSCRIBER.lock().ok().and_then(|guard| {
-        guard
-            .as_ref()
-            .and_then(|shared| shared.lock().ok().map(|t| t.clone()))
-    });
-    if let Some(transcriber_snapshot) = transcriber_snapshot {
-        if let Ok(mut slot) = LONG_FORM_SESSION.lock() {
-            if let Some(stale) = slot.take() {
-                stale.cancel();
-            }
-            *slot = Some(sotto_desktop::long_form::LongFormSession::start(
-                Arc::clone(recorder),
-                transcriber_snapshot,
-            ));
-        }
-    } else {
-        eprintln!("[LongForm] No transcriber snapshot; long takes will not be chunked");
-    }
-
-    // 3. Mark start time for actual elapsed time counter
+    // 2. Mark start time & sync trigger state immediately
     if let Ok(mut start_guard) = recording_start.lock() {
         *start_guard = Some(Instant::now());
     }
+    sync_hotkey_recording(true);
 
-    // 4. Update atomic state to Listening
-    engine_state.store(1, Ordering::SeqCst);
-
-    // The cue is intentionally short and quiet. It is played after capture is
-    // armed so the user hears it through the route the take is using.
-    audio::chime::play_start();
-
-    #[cfg(target_os = "windows")]
-    if let Ok(guard) = GLOBAL_HOTKEY_MGR.lock() {
-        if let Some(ref mgr) = *guard {
-            mgr.set_recording(true);
-        }
-    }
-
-    // 5. Update UI properties
+    // 3. Update UI properties immediately (0ms visual responsiveness)
     if let Some(pill) = pill_weak.upgrade() {
         pill.set_active_state(1);
         pill.set_timer_sec(0);
         pill.set_timer_text("0:00".into());
     }
     wake_pill_anim_timer();
-// Studio preview stage remains independent from live mic start
 
-    println!("[Pipeline] State -> 1: Listening (Audio Capture Started)");
+    // 4. Arm WASAPI / Bluetooth capture + LongFormSession on the dedicated audio worker
+    if !send_audio_ctrl(AudioCtrlCmd::Start {
+        my_gen,
+        pill_weak: pill_weak.clone(),
+        engine_state: Arc::clone(engine_state),
+        recording_start: Arc::clone(recording_start),
+        dictation_gen: Arc::clone(dictation_gen),
+    }) {
+        engine_state.store(0, Ordering::SeqCst);
+        sync_hotkey_recording(false);
+        if let Ok(mut start_guard) = recording_start.lock() {
+            *start_guard = None;
+        }
+        reset_pill_to_idle(pill_weak.clone());
+        return;
+    }
+
+    println!("[Pipeline] State -> 1: Listening (Audio Capture Queued)");
     let _ = std::io::stdout().flush();
 }
 
-/// Instantly aborts dictation without sending audio, transcribing, or pasting
+/// Instantly aborts dictation without sending audio, transcribing, or pasting.
 fn cancel_dictation(
     pill_weak: &slint::Weak<FloatingPillWindow>,
-    recorder: &Arc<Mutex<Option<audio::recorder::AudioRecorder>>>,
     engine_state: &Arc<AtomicU8>,
     recording_start: &Arc<Mutex<Option<Instant>>>,
     dictation_gen: &Arc<std::sync::atomic::AtomicU64>,
@@ -3226,49 +3675,19 @@ fn cancel_dictation(
 ) {
     dictation_gen.fetch_add(1, Ordering::SeqCst);
     let prev = engine_state.swap(0, Ordering::SeqCst);
+    sync_hotkey_recording(false);
     if prev == 0 {
         return;
     }
-
-    // Stop and detach the long-recording pump before the recorder is stopped,
-    // so no thread can poll the buffers while the device is being released.
-    if let Ok(mut slot) = LONG_FORM_SESSION.lock() {
-        if let Some(session) = slot.take() {
-            session.cancel();
-        }
-    }
-
-    // Release the headset stream before the stop cue and music. The cue must
-    // not be captured, and playback must not resume into an open microphone.
-    if let Ok(mut rec_guard) = recorder.lock() {
-        if let Some(rec) = rec_guard.as_mut() {
-            let _ = rec.stop();
-        }
-    }
-    if prev == 1 {
-        audio::chime::play_stop();
-    }
-    media::resume_immediately();
 
     if let Ok(mut start_guard) = recording_start.lock() {
         *start_guard = None;
     }
     safety_net.clear();
+    reset_pill_to_idle(pill_weak.clone());
 
-    #[cfg(target_os = "windows")]
-    if let Ok(guard) = GLOBAL_HOTKEY_MGR.lock() {
-        if let Some(ref mgr) = *guard {
-            mgr.set_recording(false);
-        }
-    }
-
-    let p_weak = pill_weak.clone();
-    let _ = slint::invoke_from_event_loop(move || {
-        if let Some(p) = p_weak.upgrade() {
-            p.set_active_state(0);
-            p.set_timer_sec(0);
-            p.set_timer_text("0:00".into());
-        }
+    let _ = send_audio_ctrl(AudioCtrlCmd::Cancel {
+        play_stop_chime: prev == 1,
     });
 
     println!("[Pipeline] Cancelled dictation! Returned to Idle (State 0)");
@@ -3276,9 +3695,9 @@ fn cancel_dictation(
 }
 
 /// Finalizes voice dictation (State 1 -> State 2: Transcribing -> State 3: Success -> State 0: Idle)
+/// without stalling the UI thread on stream teardown or DSP.
 fn stop_dictation(
     pill_weak: &slint::Weak<FloatingPillWindow>,
-    recorder: &Arc<Mutex<Option<audio::recorder::AudioRecorder>>>,
     transcriber: &router::SharedTranscriber,
     engine_state: &Arc<AtomicU8>,
     recording_start: &Arc<Mutex<Option<Instant>>>,
@@ -3290,15 +3709,18 @@ fn stop_dictation(
     dictation_gen: &Arc<std::sync::atomic::AtomicU64>,
 ) {
     inactivity.record_activity();
-    let prev = engine_state.load(Ordering::SeqCst);
-    if prev != 1 {
+    if engine_state
+        .compare_exchange(1, 2, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
         return;
     }
 
     let my_gen = dictation_gen.load(Ordering::SeqCst);
 
-    // 1. Transition to Transcribing (State 2)
-    engine_state.store(2, Ordering::SeqCst);
+    // Capture has ended; re-arm Toggle immediately so a subsequent hotkey never inverts.
+    sync_hotkey_recording(false);
+
     if let Ok(mut start_guard) = recording_start.lock() {
         *start_guard = None;
     }
@@ -3307,248 +3729,23 @@ fn stop_dictation(
         pill.set_active_state(2);
     }
     wake_pill_anim_timer();
-// Studio preview stage remains independent from live mic stop
 
-    println!("[Pipeline] State -> 2: Transcribing (Audio Stopped, Groq HTTP/2 Upload)");
+    println!("[Pipeline] State -> 2: Transcribing (Audio Stopping Off-UI, Groq HTTP/2 Upload)");
     let _ = std::io::stdout().flush();
 
-    // 2. Stop audio capture. A long-form session owns the pump and the tail;
-    // short takes fall through to the existing single-upload pipeline.
-    let session_finish = LONG_FORM_SESSION
-        .lock()
-        .ok()
-        .and_then(|mut slot| slot.take())
-        .map(|session| session.finish());
-
-    let payload_opt = match session_finish {
-        Some(sotto_desktop::long_form::LongFormFinish::Chunked(resolution)) => {
-            let transcriber_snapshot = match transcriber.lock() {
-                Ok(guard) => guard.clone(),
-                Err(poisoned) => poisoned.into_inner().clone(),
-            };
-            // The recorder has released the headset stream by this point, so
-            // this cue is not part of the take.
-            audio::chime::play_stop();
-            spawn_long_form_resolution(
-                resolution,
-                transcriber_snapshot,
-                pill_weak.clone(),
-                Arc::clone(engine_state),
-                target_hwnd.load(Ordering::SeqCst),
-                Arc::clone(history_queue),
-                Arc::clone(safety_net),
-                Arc::clone(post_processor),
-                Arc::clone(dictation_gen),
-                my_gen,
-            );
-            return;
-        }
-        Some(sotto_desktop::long_form::LongFormFinish::Single(payload)) => payload,
-        None => {
-            if let Ok(mut rec_guard) = recorder.lock() {
-                if let Some(rec) = rec_guard.as_mut() {
-                    match rec.stop() {
-                        Ok(p) => p,
-                        Err(e) => {
-                            eprintln!(
-                                "[Audio Pipeline Error] Failed to finalize recording: {}",
-                                e
-                            );
-                            None
-                        }
-                    }
-                } else {
-                    None
-                }
-            } else {
-                None
-            }
-        }
-    };
-
-    // The recorder has released the headset stream by this point, so this cue
-    // is not part of the take.
-    audio::chime::play_stop();
-
-    match payload_opt {
-        Some(payload) => {
-            println!(
-                "[Audio Pipeline] Captured {}ms audio buffer ({} bytes WAV ready for dispatch)",
-                payload.duration_ms,
-                payload.wav_bytes.len()
-            );
-
-            let target_active = target_hwnd.load(Ordering::SeqCst);
-            // Step 2.2: Save audio payload to in-memory Safety Net cache before dispatch
-            safety_net.save(payload.wav_bytes.clone(), payload.duration_ms, target_active);
-
-            {
-                let transcriber_snapshot = match transcriber.lock() {
-                    Ok(guard) => guard.clone(),
-                    Err(poisoned) => poisoned.into_inner().clone(),
-                };
-                let groq_for_llm = transcriber_snapshot.groq_client();
-                let gemini_for_llm = transcriber_snapshot.gemini_client();
-                let pill_async = pill_weak.clone();
-                let engine_async = Arc::clone(engine_state);
-                let target_async = target_active;
-                let history_async = Arc::clone(history_queue);
-                let safety_async = Arc::clone(safety_net);
-                let processor_async = Arc::clone(post_processor);
-                let dict_gen_async = Arc::clone(dictation_gen);
-
-                std::thread::spawn(move || {
-                    if dict_gen_async.load(Ordering::SeqCst) != my_gen {
-                        println!("[Pipeline] Transcription aborted: cancelled by user");
-                        return;
-                    }
-                    match transcriber_snapshot.transcribe_blocking(payload.wav_bytes) {
-                        Ok(res) => {
-                            if dict_gen_async.load(Ordering::SeqCst) != my_gen {
-                                println!("[Pipeline] Transcription completed but aborted by cancel trigger");
-                                return;
-                            }
-                            println!("[Transcribe Pipeline] Raw Transcript: \"{}\" in {}ms", res.text, res.latency_ms);
-                            safety_async.clear(); // Successfully transcribed, purge audio buffer from RAM
-
-                            let (app_name, exe_path) = get_process_info_for_hwnd(target_async);
-                            let cleaned_text = if processor_async.get_options().llm_enabled || processor_async.get_options().mode == sotto_desktop::cleaner::PostProcessMode::SmartLLM {
-                                shared_tokio().block_on(processor_async.process_async_with_duration(
-                                    &res.text,
-                                    Some(&app_name),
-                                    groq_for_llm.as_ref(),
-                                    gemini_for_llm.as_ref(),
-                                    Some(payload.duration_ms),
-                                ))
-                            } else {
-                                processor_async.process_local_with_duration(&res.text, Some(&app_name), Some(payload.duration_ms))
-                            };
-
-                            if cleaned_text.is_empty() {
-                                println!("[Cleaner] Dropped hallucinated or empty transcript: {:?}", res.text);
-                                engine_async.store(0, Ordering::SeqCst);
-                                media::resume_after_dictation();
-                                let p1 = pill_async.clone();
-                                let _ = slint::invoke_from_event_loop(move || {
-                                    if let Some(p) = p1.upgrade() {
-                                        p.set_active_state(0);
-                                    }
-// Studio preview isolated
-                                });
-                                return;
-                            }
-                            println!("[PostProcessor] Final Transformed Text: \"{}\" (Venue: {})", cleaned_text, app_name);
-
-                            engine_async.store(3, Ordering::SeqCst);
-
-                            let p1 = pill_async.clone();
-                            let _ = slint::invoke_from_event_loop(move || {
-                                if let Some(p) = p1.upgrade() {
-                                    p.set_active_state(3); // State 3: Success
-                                }
-                                wake_pill_anim_timer();
-// Studio preview isolated
-                                println!("[Pipeline] State -> 3: Success");
-                            });
-
-                            if dict_gen_async.load(Ordering::SeqCst) != my_gen {
-                                println!("[Pipeline] Text injection aborted by cancel trigger");
-                                return;
-                            }
-                            #[cfg(target_os = "windows")]
-                            if let Ok(guard) = GLOBAL_HOTKEY_MGR.lock() {
-                                if let Some(ref mgr) = *guard {
-                                    mgr.set_recording(false);
-                                }
-                            }
-                            // Inject text with target window focus restoration
-                            if let Err(e) = inject::inject_text_with_target(&cleaned_text, target_async) {
-                                eprintln!("[Inject Error] Failed to inject text: {}", e);
-                            }
-
-                            // Resume only after the written text exists, with a
-                            // short settle so music does not race the route
-                            // switch back to A2DP.
-                            media::resume_after_dictation();
-
-                            // Asynchronously enqueue dictation into SQLite WAL DB (zero injection latency)
-                            let _ = app_icon::prewarm_app_icon(&app_name, exe_path.as_deref());
-                            let exe_path_clone = exe_path.clone();
-                            history_async.enqueue_insert(
-                                cleaned_text.clone(),
-                                payload.duration_ms as i32,
-                                app_name,
-                                move |rec| {
-                                    let exe_path_ui = exe_path_clone.clone();
-                                    let _ = slint::invoke_from_event_loop(move || {
-                                        prepend_studio_history_record(rec, exe_path_ui, "new");
-                                    });
-                                },
-                            );
-
-                            // Auto-reset back to Idle after 400ms
-                            std::thread::sleep(Duration::from_millis(400));
-                            if engine_async.load(Ordering::SeqCst) == 3 {
-                                engine_async.store(0, Ordering::SeqCst);
-                                let p_idle = pill_async.clone();
-                                let _ = slint::invoke_from_event_loop(move || {
-                                    if let Some(p) = p_idle.upgrade() {
-                                        p.set_active_state(0);
-                                        p.set_timer_sec(0);
-                                        p.set_timer_text("0:00".into());
-                                    }
-// Studio preview isolated
-                                    println!("[Pipeline] State -> 0: Idle (Ready)");
-                                });
-                            }
-                        }
-                        Err(e) => {
-                            eprintln!("[Transcribe Pipeline Error] {}", e);
-                            engine_async.store(4, Ordering::SeqCst);
-                            media::resume_after_dictation();
-
-                            let p1 = pill_async.clone();
-                            let _ = slint::invoke_from_event_loop(move || {
-                                if let Some(p) = p1.upgrade() {
-                                    p.set_active_state(4); // State 4: Error
-                                }
-                                wake_pill_anim_timer();
-// Studio preview isolated
-                                println!("[Pipeline] State -> 4: Error (Audio safely buffered in RAM for retry)");
-                            });
-
-                            // Display error state for 6s before visually resetting to Idle; audio remains safe in RAM!
-                            std::thread::sleep(Duration::from_millis(6000));
-                            if engine_async.load(Ordering::SeqCst) == 4 {
-                                engine_async.store(0, Ordering::SeqCst);
-                                let p_idle = pill_async.clone();
-                                let _ = slint::invoke_from_event_loop(move || {
-                                    if let Some(p) = p_idle.upgrade() {
-                                        p.set_active_state(0);
-                                        p.set_timer_sec(0);
-                                        p.set_timer_text("0:00".into());
-                                    }
-// Studio preview isolated
-                                    println!("[Pipeline] State -> 0: Idle (Ready, retry buffer preserved)");
-                                });
-                            }
-                        }
-                    }
-                });
-            }
-        }
-        None => {
-            // Silence or ghost tap rejected by filters
-            println!("[Pipeline] Dictation rejected by acoustic filters; resetting to Idle");
-            engine_state.store(0, Ordering::SeqCst);
-            media::resume_after_dictation();
-            if let Some(pill) = pill_weak.upgrade() {
-                pill.set_active_state(0);
-                pill.set_timer_sec(0);
-                pill.set_timer_text("0:00".into());
-            }
-// Studio preview isolated
-        }
+    if !send_audio_ctrl(AudioCtrlCmd::Stop {
+        my_gen,
+        pill_weak: pill_weak.clone(),
+        transcriber: Arc::clone(transcriber),
+        engine_state: Arc::clone(engine_state),
+        target_hwnd: target_hwnd.load(Ordering::SeqCst),
+        history_queue: Arc::clone(history_queue),
+        safety_net: Arc::clone(safety_net),
+        post_processor: Arc::clone(post_processor),
+        dictation_gen: Arc::clone(dictation_gen),
+    }) {
+        engine_state.store(0, Ordering::SeqCst);
+        reset_pill_to_idle(pill_weak.clone());
     }
 }
 
@@ -3702,12 +3899,6 @@ fn spawn_long_form_resolution(
             println!("[LongForm] Text injection aborted by cancel trigger");
             return;
         }
-        #[cfg(target_os = "windows")]
-        if let Ok(guard) = GLOBAL_HOTKEY_MGR.lock() {
-            if let Some(ref mgr) = *guard {
-                mgr.set_recording(false);
-            }
-        }
         if let Err(e) = inject::inject_text_with_target(&cleaned_text, target_hwnd) {
             eprintln!("[Inject Error] Failed to inject long-form text: {}", e);
         }
@@ -3776,7 +3967,8 @@ fn resolve_retry_segments(
             } => {
                 let prompt = audio::chunker::continuation_prompt(&stitched);
                 let prompt_opt = (!prompt.is_empty()).then_some(prompt.as_str());
-                match transcriber.transcribe_blocking_with_prompt(wav_bytes.clone(), prompt_opt)
+                match shared_tokio()
+                    .block_on(transcriber.transcribe_with_prompt(wav_bytes.clone(), prompt_opt))
                 {
                     Ok(result) => {
                         let joined = audio::stitch_transcripts([
@@ -3816,6 +4008,7 @@ fn retry_dictation(
     if let Some(cached) = safety_net.get_for_retry() {
         // Transition back to State 2: Transcribing
         engine_state.store(2, Ordering::SeqCst);
+        sync_hotkey_recording(false);
         if let Some(pill) = pill_weak.upgrade() {
             pill.set_active_state(2);
         }
@@ -4278,6 +4471,7 @@ fn main() -> Result<(), slint::PlatformError> {
         write_snap_bmp("studio_customization_bottom.bmp", &buffer_b);
 
         // 3. Take snapshot with key recording listening state
+        studio.set_recording_slot(0);
         studio.set_is_recording_key(true);
         let buffer_picker = studio.window().take_snapshot()?;
         write_snap_bmp("studio_customization_picker.bmp", &buffer_picker);
@@ -4935,17 +5129,21 @@ fn load_or_create_ipc_token() -> String {
     let app_cfg = config::AppConfig::load();
     media::init(app_cfg.media_pause_enabled);
     audio::chime::set_enabled(app_cfg.chimes_enabled);
-    let recorder = Arc::new(Mutex::new(
-        match audio::recorder::AudioRecorder::new_with_mode(app_cfg.capture_mode) {
-            Ok(r) => Some(r),
-            Err(e) => {
-                eprintln!("[Audio Ingest Notice] Mic not available at startup: {}", e);
-                None
-            }
-        },
-    ));
+    let recorder_opt = match audio::recorder::AudioRecorder::new_with_mode(app_cfg.capture_mode) {
+        Ok(r) => Some(r),
+        Err(e) => {
+            eprintln!("[Audio Ingest Notice] Mic not available at startup: {}", e);
+            None
+        }
+    };
+    let live_meters = recorder_opt.as_ref().map(|r| r.live_meters());
+    let recorder = Arc::new(Mutex::new(recorder_opt));
     if let Ok(mut guard) = GLOBAL_RECORDER.lock() {
         *guard = Some(Arc::downgrade(&recorder));
+    }
+    let audio_ctrl_tx = spawn_audio_ctrl_worker(Arc::clone(&recorder));
+    if let Ok(mut guard) = GLOBAL_AUDIO_CTRL.lock() {
+        *guard = Some(audio_ctrl_tx);
     }
 
     // Initialize local SQLite history database with WAL mode and background queue (Step 2.1)
@@ -5101,7 +5299,6 @@ fn load_or_create_ipc_token() -> String {
 
     // 5. State transitions: Click triggers recording lifecycle & Groq HTTP/2 dispatch
     let pill_weak = pill.as_weak();
-    let recorder_cycle = Arc::clone(&recorder);
     let transcriber_cycle = Arc::clone(&transcriber);
     let engine_state_cycle = Arc::clone(&engine_state);
     let recording_start_cycle = Arc::clone(&recording_start);
@@ -5112,7 +5309,6 @@ fn load_or_create_ipc_token() -> String {
     let processor_cycle = Arc::clone(&post_processor);
     let cycle_fn: Arc<dyn Fn() + Send + Sync> = {
         let p_w = pill_weak.clone();
-        let rec = Arc::clone(&recorder_cycle);
         let transcriber_c = Arc::clone(&transcriber_cycle);
         let est = Arc::clone(&engine_state_cycle);
         let rstart = Arc::clone(&recording_start_cycle);
@@ -5128,11 +5324,11 @@ fn load_or_create_ipc_token() -> String {
             match current {
                 0 => {
                     // Idle -> Start dictation
-                    start_dictation(&p_w, &rec, &est, &rstart, &thwnd, &inact, &dict_gen_cycle);
+                    start_dictation(&p_w, &est, &rstart, &thwnd, &inact, &dict_gen_cycle);
                 }
                 1 => {
                     // Listening -> Stop dictation & transcribe
-                    stop_dictation(&p_w, &rec, &transcriber_c, &est, &rstart, &thwnd, &inact, &hq, &safety, &post_proc, &dict_gen_cycle);
+                    stop_dictation(&p_w, &transcriber_c, &est, &rstart, &thwnd, &inact, &hq, &safety, &post_proc, &dict_gen_cycle);
                 }
                 2 => {
                     // Transcribing -> Click is ignored to prevent UI corruption while processing
@@ -5200,7 +5396,6 @@ fn load_or_create_ipc_token() -> String {
 
     let pill_hk_weak = pill.as_weak();
     let inactivity_hk = inactivity.clone();
-    let rec_hk = Arc::clone(&recorder);
     let transcriber_hk = Arc::clone(&transcriber);
     let est_hk = Arc::clone(&engine_state);
     let rstart_hk = Arc::clone(&recording_start);
@@ -5220,7 +5415,6 @@ fn load_or_create_ipc_token() -> String {
         &app_cfg.secondary_cancel_trigger,
         move |evt| {
         let p_weak = pill_hk_weak.clone();
-        let r_clone = Arc::clone(&rec_hk);
         let t_clone = Arc::clone(&transcriber_hk);
         let est_clone = Arc::clone(&est_hk);
         let rstart_clone = Arc::clone(&rstart_hk);
@@ -5238,18 +5432,18 @@ fn load_or_create_ipc_token() -> String {
                         println!("[Hotkey] Triggered during Error state: executing Safety Net retry");
                         let retried = retry_dictation(&p_weak, &safety_clone, &t_clone, &est_clone, &inact_clone, &hq_clone, &proc_clone);
                         if !retried {
-                            start_dictation(&p_weak, &r_clone, &est_clone, &rstart_clone, &thwnd_clone, &inact_clone, &dict_gen_clone);
+                            start_dictation(&p_weak, &est_clone, &rstart_clone, &thwnd_clone, &inact_clone, &dict_gen_clone);
                         }
                     } else {
-                        start_dictation(&p_weak, &r_clone, &est_clone, &rstart_clone, &thwnd_clone, &inact_clone, &dict_gen_clone);
+                        start_dictation(&p_weak, &est_clone, &rstart_clone, &thwnd_clone, &inact_clone, &dict_gen_clone);
                     }
                 }
                 hotkey::HotkeyEvent::StopListening => {
-                    stop_dictation(&p_weak, &r_clone, &t_clone, &est_clone, &rstart_clone, &thwnd_clone, &inact_clone, &hq_clone, &safety_clone, &proc_clone, &dict_gen_clone);
+                    stop_dictation(&p_weak, &t_clone, &est_clone, &rstart_clone, &thwnd_clone, &inact_clone, &hq_clone, &safety_clone, &proc_clone, &dict_gen_clone);
                 }
                 hotkey::HotkeyEvent::CancelListening => {
                     println!("[Hotkey Engine] Cancel listening event triggered");
-                    cancel_dictation(&p_weak, &r_clone, &est_clone, &rstart_clone, &dict_gen_clone, &safety_clone);
+                    cancel_dictation(&p_weak, &est_clone, &rstart_clone, &dict_gen_clone, &safety_clone);
                 }
             }
         });
@@ -5277,7 +5471,7 @@ fn load_or_create_ipc_token() -> String {
 
     // 8. Adaptive Animation Clock (Event-Driven Zero-Cost Idle Architecture)
     let pill_anim_weak = pill.as_weak();
-    let recorder_anim = Arc::clone(&recorder);
+    let live_meters_anim = live_meters;
     let engine_state_anim = Arc::clone(&engine_state);
     let recording_start_anim = Arc::clone(&recording_start);
     let studio_vis_anim = Arc::clone(&studio_visible);
@@ -5362,12 +5556,11 @@ fn load_or_create_ipc_token() -> String {
                     }
                 }
 
-                // 2. Real microphone live energy & 3 acoustic formant bands (lock-free)
-                let (raw_rms, low_rms, mid_rms, high_rms) = if let Ok(rec_guard) = recorder_anim.try_lock() {
-                    rec_guard.as_ref().map(|r| r.live_formants()).unwrap_or((0.0, 0.0, 0.0, 0.0))
-                } else {
-                    (0.0, 0.0, 0.0, 0.0)
-                };
+                // 2. Real microphone live energy & 3 acoustic formant bands (lock-free atomics)
+                let (raw_rms, low_rms, mid_rms, high_rms) = live_meters_anim
+                    .as_ref()
+                    .map(|m| m.live_formants())
+                    .unwrap_or((0.0, 0.0, 0.0, 0.0));
 
                 // 3. Dynamic Adaptive Noise Floor Tracker (VAD):
                 if raw_rms < adaptive_ambient {
@@ -5616,6 +5809,14 @@ fn load_or_create_ipc_token() -> String {
                     } else if msg.contains("EXIT") {
                         println!("[IPC] Clean exit requested via IPC -> terminating cleanly");
                         let _ = std::io::stdout().flush();
+                        let (ack_tx, ack_rx) = std::sync::mpsc::channel();
+                        if send_audio_ctrl(AudioCtrlCmd::Shutdown {
+                            drop_recorder: true,
+                            ack: ack_tx,
+                        }) {
+                            let _ = ack_rx.recv_timeout(Duration::from_millis(600));
+                        }
+                        media::shutdown();
                         #[cfg(target_os = "windows")]
                         unsafe {
                             windows_sys::Win32::System::Threading::TerminateProcess(
@@ -5709,7 +5910,6 @@ fn load_or_create_ipc_token() -> String {
 
     let pill_vis_tray = Arc::new(AtomicBool::new(true));
     let pill_vis_action = Arc::clone(&pill_vis_tray);
-    let rec_tray = Arc::clone(&recorder);
 
     let _tray = match tray::SystemTray::new(move |action| {
         match action {
@@ -5748,11 +5948,12 @@ fn load_or_create_ipc_token() -> String {
             tray::TrayAction::Exit => {
                 println!("[System Tray] Exit requested from tray menu -> terminating cleanly");
                 let _ = std::io::stdout().flush();
-                if let Ok(mut rec) = rec_tray.lock() {
-                    if let Some(r) = rec.as_mut() {
-                        let _ = r.stop();
-                    }
-                    *rec = None;
+                let (ack_tx, ack_rx) = std::sync::mpsc::channel();
+                if send_audio_ctrl(AudioCtrlCmd::Shutdown {
+                    drop_recorder: true,
+                    ack: ack_tx,
+                }) {
+                    let _ = ack_rx.recv_timeout(Duration::from_millis(600));
                 }
                 media::shutdown();
                 #[cfg(target_os = "windows")]
@@ -5807,11 +6008,13 @@ fn load_or_create_ipc_token() -> String {
 
     // Run Slint event loop
     let res = slint::run_event_loop();
-    // Release the microphone before handing the route back to media playback.
-    if let Ok(mut rec_guard) = recorder.lock() {
-        if let Some(rec) = rec_guard.as_mut() {
-            let _ = rec.stop();
-        }
+    // Release the microphone cleanly before handing the route back to media playback.
+    let (ack_tx, ack_rx) = std::sync::mpsc::channel();
+    if send_audio_ctrl(AudioCtrlCmd::Shutdown {
+        drop_recorder: false,
+        ack: ack_tx,
+    }) {
+        let _ = ack_rx.recv_timeout(Duration::from_millis(600));
     }
     media::shutdown();
     res

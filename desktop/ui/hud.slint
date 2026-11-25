@@ -14,8 +14,6 @@ import { HistoryCard } from "components/history_card.slint";
 import { InfoTooltip } from "components/info_tooltip.slint";
 import { Theme } from "components/theme.slint";
 
-import "./fonts/DMSans.ttf";
-import "./fonts/PlayfairDisplay.ttf";
 import "./fonts/Inter-Regular.ttf";
 import "./fonts/Inter-Medium.ttf";
 import "./fonts/Inter-SemiBold.ttf";
@@ -57,10 +55,10 @@ component VoicePill inherits Rectangle {
             return opt == 1 ? 44px : (opt == 2 ? 56px : 48px);
         }
         if (root.active-state == 1) {
-            return opt == 1 ? 84px : (opt == 2 ? 100px : 110px);
+            return opt == 1 ? 84px : (opt == 2 ? 100px : 112px);
         }
         if (root.active-state == 2) {
-            return opt == 1 ? 74px : (opt == 2 ? 80px : 72px);
+            return opt == 1 ? 76px : (opt == 2 ? 80px : 72px);
         }
         if (root.active-state == 3) {
             return opt == 1 ? 64px : (opt == 2 ? 68px : 60px);
@@ -504,7 +502,7 @@ export component FloatingPillWindow inherits Window {
     always-on-top: true;
     no-frame: true;
     background: transparent;
-    default-font-family: "DM Sans";
+    default-font-family: "Inter";
     icon: @image-url("../assets/icons/sotto-mark-dark.svg");
     width: 140px;
     height: 60px;
@@ -544,7 +542,7 @@ export component StudioWindow inherits Window {
     preferred-width: 1040px;
     preferred-height: 840px;
     background: Theme.input-bg;
-    default-font-family: "DM Sans";
+    default-font-family: "Inter";
 
     in-out property <bool> is-fullscreen: false;
     callback toggle-fullscreen();
@@ -732,10 +730,10 @@ export component StudioWindow inherits Window {
             return opt == 1 ? "44 x 32 px (LED)" : (opt == 2 ? "56 x 32 px (Focus)" : "48 x 32 px (Standard)");
         }
         if (root.active-state == 1) {
-            return opt == 1 ? "84 x 32 px (5-Bar)" : (opt == 2 ? "100 x 32 px (Pulse Ring)" : "110 x 32 px (Waveform)");
+            return opt == 1 ? "84 x 32 px (5-Bar)" : (opt == 2 ? "100 x 32 px (Pulse Ring)" : "112 x 32 px (Waveform)");
         }
         if (root.active-state == 2) {
-            return opt == 1 ? "74 x 32 px (Ripple)" : (opt == 2 ? "80 x 32 px (Radar)" : "72 x 32 px (Orbit)");
+            return opt == 1 ? "76 x 32 px (Ripple)" : (opt == 2 ? "80 x 32 px (Radar)" : "72 x 32 px (Orbit)");
         }
         if (root.active-state == 3) {
             return opt == 1 ? "64 x 32 px (Ring Check)" : (opt == 2 ? "68 x 32 px (Double Check)" : "60 x 32 px (Minimal)");
@@ -744,44 +742,49 @@ export component StudioWindow inherits Window {
     }
 
     VerticalLayout {
+        width: parent.width;
+        height: parent.height;
         padding: Theme.space-24;
         spacing: Theme.space-16;
 
-        // =====================================================================
-        // HEADER: SHADCN / LINEAR MINIMALIST WITH STATUS PILL
-        // =====================================================================
-        HorizontalLayout {
-            alignment: space-between;
+            // =====================================================================
+            // HEADER: SHADCN / LINEAR MINIMALIST WITH STATUS PILL
+            // =====================================================================
+            HorizontalLayout {
+                alignment: space-between;
 
-            // Integrated Brand Lockup (transparent SVG waveform mark + Playfair Display wordmark)
-            brand-logo := HorizontalLayout {
-                height: 36px;
-                spacing: Theme.space-8;
-                alignment: start;
-                accessible-role: text;
-                accessible-label: "Sotto";
+                // Integrated Brand Lockup (transparent SVG waveform mark + optical Playfair SVG wordmark)
+                brand-logo := HorizontalLayout {
+                    height: 36px;
+                    spacing: Theme.space-8;
+                    alignment: start;
+                    accessible-role: text;
+                    accessible-label: "Sotto";
 
-                VerticalLayout {
-                    alignment: center;
-                    Image {
-                        width: 28px;
-                        height: 28px;
-                        source: @image-url("../assets/icons/sotto-tray-dark.svg");
-                        colorize: Theme.ink-primary;
-                        image-fit: contain;
+                    VerticalLayout {
+                        alignment: center;
+                        Image {
+                            width: 28px;
+                            height: 28px;
+                            source: @image-url("../assets/icons/sotto-tray-dark.svg");
+                            colorize: Theme.ink-primary;
+                            image-fit: contain;
+                            image-rendering: smooth;
+                        }
+                    }
+
+                    VerticalLayout {
+                        alignment: center;
+                        Image {
+                            width: 72px;
+                            height: 23px;
+                            source: @image-url("../assets/icons/sotto-wordmark.svg");
+                            colorize: Theme.ink-primary;
+                            image-fit: contain;
+                            image-rendering: smooth;
+                        }
                     }
                 }
-
-                Text {
-                    text: "Sotto";
-                    font-size: Theme.type-display.size;
-                    font-weight: Theme.type-display.weight;
-                    font-family: Theme.type-display.family;
-                    letter-spacing: -0.6px;
-                    color: Theme.ink-primary;
-                    vertical-alignment: center;
-                }
-            }
 
             // Top Action Controls: Segmented Top Tab Bar Capsule
             studio-tabs := TabBar {
@@ -832,18 +835,23 @@ export component StudioWindow inherits Window {
                             alignment: start;
 
                         StatChip {
-                            icon: "📁";
+                            icon-svg: @image-url("../assets/icons/layers.svg");
+                            has-svg: true;
                             label: root.history-count + " Dictations";
                             accent: true;
                         }
 
                         StatChip {
-                            icon: "🔒";
+                            icon-svg: @image-url("../assets/icons/lock.svg");
+                            has-svg: true;
                             label: "SQLite WAL Local";
                         }
 
                         StatChip {
-                            icon: root.provider-id == "gemini" ? "✦" : "⚡";
+                            icon-svg: root.provider-id == "gemini"
+                                ? @image-url("../assets/icons/sparkle.svg")
+                                : @image-url("../assets/icons/bolt.svg");
+                            has-svg: true;
                             label: root.provider-chip-text;
                         }
                     }
@@ -926,7 +934,9 @@ export component StudioWindow inherits Window {
 
                 history-list := Flickable {
                     interactive: false;
-                    width: parent.width - 22px;
+                    width: (root.history-content-height > parent.height && root.history-count > 0)
+                        ? (parent.width - 22px)
+                        : parent.width;
                     height: parent.height;
                     visible: root.history-count > 0;
                     content-height: root.history-content-height;
@@ -934,7 +944,9 @@ export component StudioWindow inherits Window {
 
                     VerticalLayout {
                         alignment: start;
-                        padding-right: Theme.space-12;
+                        padding-right: (root.history-content-height > history-container.height && root.history-count > 0)
+                            ? Theme.space-12
+                            : Theme.space-0;
                         padding-bottom: Theme.space-16;
                         spacing: Theme.space-8;
 
@@ -1105,7 +1117,7 @@ export component StudioWindow inherits Window {
                                 horizontal-alignment: center;
                             }
                             Text {
-                                text: "Press your global hotkey in any Windows application to capture and dictate speech in real-time.";
+                                text: "Press your global hotkey in any application to capture and dictate speech in real time.";
                                 font-size: Theme.type-title.size;
                                 color: Theme.ink-secondary;
                                 horizontal-alignment: center;
@@ -1183,19 +1195,24 @@ export component StudioWindow inherits Window {
 
                             StatChip {
                                 chip-height: 24px;
-                                icon: "🔒";
+                                icon-svg: @image-url("../assets/icons/lock.svg");
+                                has-svg: true;
                                 label: "100% On-Device SQLite WAL";
                             }
 
                             StatChip {
                                 chip-height: 24px;
-                                icon: root.provider-id == "gemini" ? "✦" : "⚡";
+                                icon-svg: root.provider-id == "gemini"
+                                    ? @image-url("../assets/icons/sparkle.svg")
+                                    : @image-url("../assets/icons/bolt.svg");
+                                has-svg: true;
                                 label: root.provider-chip-text;
                             }
 
                             StatChip {
                                 chip-height: 24px;
-                                icon: "📋";
+                                icon-svg: @image-url("../assets/icons/cursor.svg");
+                                has-svg: true;
                                 label: "Instant Cursor Injection";
                             }
                         }
@@ -1215,16 +1232,17 @@ export component StudioWindow inherits Window {
                 clip: true;
 
                 providers_flick := Flickable {
-                    width: parent.width;
+                    width: root.providers-can-scroll ? (parent.width - Theme.space-16) : parent.width;
                     height: parent.height;
                     content-height: root.providers-content-height;
                     content-y: root.providers-viewport-y;
                     interactive: false;
 
                     providers_content_layout := VerticalLayout {
+                        width: parent.width;
                         alignment: start;
                         spacing: Theme.space-24;
-                        padding-right: Theme.space-16;
+                        padding-right: Theme.space-0;
                         padding-bottom: Theme.space-32;
 
                     // Section header
@@ -1514,11 +1532,17 @@ export component StudioWindow inherits Window {
                                             vertical-alignment: center;
                                         }
 
-                                        Text {
-                                            text: root.language-dropdown-open ? "▴" : "▾";
-                                            font-size: Theme.type-label.size;
-                                            color: Theme.ink-muted;
-                                            vertical-alignment: center;
+                                        VerticalLayout {
+                                            alignment: center;
+                                            Image {
+                                                source: root.language-dropdown-open
+                                                    ? @image-url("../assets/icons/chevron-up.svg")
+                                                    : @image-url("../assets/icons/chevron-down.svg");
+                                                width: 12px;
+                                                height: 12px;
+                                                colorize: (root.transcription-language != "en" && root.transcription-language != "auto") ? Theme.ink-primary : Theme.ink-muted;
+                                                image-fit: contain;
+                                            }
                                         }
                                     }
 
@@ -1651,7 +1675,7 @@ export component StudioWindow inherits Window {
                         border-color: root.post-process-llm-enabled ? Theme.accent : Theme.line;
 
                         VerticalLayout {
-                            padding: Theme.space-16;
+                            padding: Theme.space-24;
                             spacing: Theme.space-16;
 
                             // Header row with Toggle
@@ -1661,6 +1685,7 @@ export component StudioWindow inherits Window {
                                 VerticalLayout {
                                     spacing: Theme.space-4;
                                     HorizontalLayout {
+                                        alignment: start;
                                         spacing: Theme.space-8;
                                         Text {
                                             text: "Enable AI Smart Polish";
@@ -1669,22 +1694,25 @@ export component StudioWindow inherits Window {
                                             color: Theme.ink-primary;
                                             vertical-alignment: center;
                                         }
-                                        Rectangle {
-                                            border-radius: Theme.radius-sm;
-                                            background: root.post-process-llm-enabled ? Theme.selected-bg : Theme.chrome-bg;
-                                            border-width: 1px;
-                                            border-color: root.post-process-llm-enabled ? Theme.accent : Theme.line;
-                                            height: 20px;
-                                            HorizontalLayout {
-                                                padding-left: Theme.space-4;
-                                                padding-right: Theme.space-4;
-                                                Text {
-                                                    text: root.post-process-llm-enabled ? "Active (~200ms)" : "Off (Fastest 0ms)";
-                                                    font-size: Theme.type-caption.size;
-                                                    font-family: Theme.font-mono;
-                                                    font-weight: 600;
-                                                    color: root.post-process-llm-enabled ? Theme.accent : Theme.ink-muted;
-                                                    vertical-alignment: center;
+                                        VerticalLayout {
+                                            alignment: center;
+                                            Rectangle {
+                                                border-radius: Theme.radius-sm;
+                                                background: root.post-process-llm-enabled ? Theme.selected-bg : Theme.chrome-bg;
+                                                border-width: 1px;
+                                                border-color: root.post-process-llm-enabled ? Theme.accent : Theme.line;
+                                                height: 20px;
+                                                HorizontalLayout {
+                                                    padding-left: Theme.space-8;
+                                                    padding-right: Theme.space-8;
+                                                    Text {
+                                                        text: root.post-process-llm-enabled ? "Active (~200ms)" : "Off (Fastest 0ms)";
+                                                        font-size: Theme.type-meta.size;
+                                                        font-family: Theme.font-mono;
+                                                        font-weight: 600;
+                                                        color: root.post-process-llm-enabled ? Theme.accent : Theme.ink-muted;
+                                                        vertical-alignment: center;
+                                                    }
                                                 }
                                             }
                                         }
@@ -2133,43 +2161,46 @@ export component StudioWindow inherits Window {
                 clip: true;
 
                 custom_flick := Flickable {
-                    width: parent.width;
+                    width: root.custom-can-scroll ? (parent.width - Theme.space-16) : parent.width;
                     height: parent.height;
                     content-height: root.custom-content-height;
                     content-y: root.custom-viewport-y;
                     interactive: false;
 
                     custom_content_layout := VerticalLayout {
+                        width: parent.width;
                         alignment: start;
                         spacing: Theme.space-24;
-                        padding-right: Theme.space-16;
+                        padding-right: Theme.space-0;
                         padding-bottom: Theme.space-32;
 
                     // =================================================================
                     // SECTION 1: LIVE VOICE PILL PREVIEW STAGE
                     // =================================================================
                     stage-box := Rectangle {
-                        background: Theme.input-bg;
+                        background: root.stage-bg();
                         border-radius: Theme.radius-lg;
                         border-width: 1px;
                         border-color: Theme.line;
                         height: 200px;
                         clip: true;
 
-                        // Linear Specular Top Sheen
+                        // Window Title Bar with Traffic Lights (pinned to top)
                         Rectangle {
-                            y: 1px; x: 12px; width: parent.width - 24px; height: 1px;
-                            background: Theme.white; opacity: 0.08;
-                        }
-
-                        // Window Title Bar with Traffic Lights
-                        Rectangle {
+                            x: 0px;
+                            y: 0px;
+                            width: parent.width;
                             height: 34px;
                             background: Theme.card-bg;
-                            border-top-left-radius: 8px;
-                            border-top-right-radius: 8px;
-                            border-width: 1px;
-                            border-color: Theme.line;
+
+                            // Bottom hairline separator
+                            Rectangle {
+                                x: 0px;
+                                y: parent.height - 1px;
+                                width: parent.width;
+                                height: 1px;
+                                background: Theme.line;
+                            }
 
                             HorizontalLayout {
                                 padding-left: Theme.space-16;
@@ -2177,28 +2208,36 @@ export component StudioWindow inherits Window {
                                 alignment: space-between;
 
                                 // Traffic Light Dots (Left)
-                                HorizontalLayout {
-                                    y: (parent.height - self.height) / 2;
-                                    spacing: Theme.space-8;
-                                    alignment: start;
-                                    Rectangle { width: 10px; height: 10px; border-radius: 5px; background: Theme.danger; }
-                                    Rectangle { width: 10px; height: 10px; border-radius: 5px; background: Theme.amber-dot; }
-                                    Rectangle { width: 10px; height: 10px; border-radius: 5px; background: Theme.success-deep; }
+                                VerticalLayout {
+                                    alignment: center;
+                                    HorizontalLayout {
+                                        spacing: Theme.space-8;
+                                        alignment: start;
+                                        Rectangle { width: 10px; height: 10px; border-radius: 5px; background: Theme.danger; }
+                                        Rectangle { width: 10px; height: 10px; border-radius: 5px; background: Theme.amber-dot; }
+                                        Rectangle { width: 10px; height: 10px; border-radius: 5px; background: Theme.success-deep; }
+                                    }
                                 }
 
                                 // Centered Stage Title
-                                HorizontalLayout {
-                                    spacing: Theme.space-8;
+                                VerticalLayout {
                                     alignment: center;
-                                    Text {
-                                        text: "Voice Pill Live Stage";
-                                        font-size: Theme.type-caption.size;
-                                        font-weight: Theme.type-caption.weight;
-                                        color: Theme.ink-secondary;
-                                        vertical-alignment: center;
-                                    }
-                                    InfoTooltip {
-                                        tip: "Real-time preview of the DirectComposition overlay pill across its 5 lifecycle states and animation variants.";
+                                    HorizontalLayout {
+                                        spacing: Theme.space-8;
+                                        alignment: center;
+                                        Text {
+                                            text: "Voice Pill Live Stage";
+                                            font-size: Theme.type-caption.size;
+                                            font-weight: Theme.type-caption.weight;
+                                            color: Theme.ink-secondary;
+                                            vertical-alignment: center;
+                                        }
+                                        VerticalLayout {
+                                            alignment: center;
+                                            InfoTooltip {
+                                                tip: "Real-time preview of the floating overlay pill across its 5 lifecycle states and animation variants.";
+                                            }
+                                        }
                                     }
                                 }
 
@@ -2238,7 +2277,7 @@ export component StudioWindow inherits Window {
                     // BOX 1: VOICE PILL CUSTOMIZATION & PRESETS CARD
                     // =================================================================
                     custom_card := Rectangle {
-                        background: Theme.card-alt;
+                        background: Theme.card-bg;
                         border-radius: Theme.radius-lg;
                         border-width: 1px;
                         border-color: Theme.line;
@@ -2466,26 +2505,17 @@ export component StudioWindow inherits Window {
                                             }
                                         }
 
-                                        // Percentage readout badge (centered text)
-                                        Rectangle {
-                                            y: (parent.height - self.height) / 2;
-                                            width: 58px;
+                                        // Live percentage readout (borderless monospace so it doesn't duplicate preset buttons)
+                                        Text {
+                                            width: 44px;
                                             height: 36px;
-                                            border-radius: Theme.radius-md;
-                                            background: Theme.chrome-bg;
-                                            border-width: 1px;
-                                            border-color: Theme.line;
-                                            Text {
-                                                width: parent.width;
-                                                height: parent.height;
-                                                text: Math.round(root.surface-opacity * 100) + "%";
-                                                font-size: Theme.type-label.size;
-                                                font-weight: 600;
-                                                color: Theme.ink-primary;
-                                                font-family: Theme.font-mono;
-                                                horizontal-alignment: center;
-                                                vertical-alignment: center;
-                                            }
+                                            text: Math.round(root.surface-opacity * 100) + "%";
+                                            font-size: Theme.type-label.size;
+                                            font-weight: 600;
+                                            color: Theme.ink-primary;
+                                            font-family: Theme.font-mono;
+                                            horizontal-alignment: right;
+                                            vertical-alignment: center;
                                         }
 
                                         // Quick preset pills (Uniform 52px width, centered text)
@@ -2493,34 +2523,34 @@ export component StudioWindow inherits Window {
                                             spacing: Theme.space-4;
                                             Rectangle {
                                                 y: (parent.height - self.height) / 2;
-                                                width: 52px; height: 36px; border-radius: Theme.radius-md;
-                                                background: Math.round(root.surface-opacity * 100) == 50 ? Theme.line : Theme.chrome-bg;
-                                                border-width: 1px; border-color: Math.round(root.surface-opacity * 100) == 50 ? Theme.ink-faint : Theme.line;
-                                                Text { width: parent.width; height: parent.height; text: "50%"; font-size: Theme.type-caption.size; font-weight: 500; color: Theme.ink-secondary; horizontal-alignment: center; vertical-alignment: center; }
+                                                width: 52px; height: 32px; border-radius: Theme.radius-md;
+                                                background: Math.round(root.surface-opacity * 100) == 50 ? Theme.selected-bg : Theme.chrome-bg;
+                                                border-width: 1px; border-color: Math.round(root.surface-opacity * 100) == 50 ? Theme.accent : Theme.line;
+                                                Text { width: parent.width; height: parent.height; text: "50%"; font-size: Theme.type-caption.size; font-weight: 500; color: Math.round(root.surface-opacity * 100) == 50 ? Theme.ink-primary : Theme.ink-secondary; horizontal-alignment: center; vertical-alignment: center; }
                                                 TouchArea { clicked => { root.set-opacity(0.50); } }
                                             }
                                             Rectangle {
                                                 y: (parent.height - self.height) / 2;
-                                                width: 52px; height: 36px; border-radius: Theme.radius-md;
-                                                background: Math.round(root.surface-opacity * 100) == 70 ? Theme.line : Theme.chrome-bg;
-                                                border-width: 1px; border-color: Math.round(root.surface-opacity * 100) == 70 ? Theme.ink-faint : Theme.line;
-                                                Text { width: parent.width; height: parent.height; text: "70%"; font-size: Theme.type-caption.size; font-weight: 500; color: Theme.ink-secondary; horizontal-alignment: center; vertical-alignment: center; }
+                                                width: 52px; height: 32px; border-radius: Theme.radius-md;
+                                                background: Math.round(root.surface-opacity * 100) == 70 ? Theme.selected-bg : Theme.chrome-bg;
+                                                border-width: 1px; border-color: Math.round(root.surface-opacity * 100) == 70 ? Theme.accent : Theme.line;
+                                                Text { width: parent.width; height: parent.height; text: "70%"; font-size: Theme.type-caption.size; font-weight: 500; color: Math.round(root.surface-opacity * 100) == 70 ? Theme.ink-primary : Theme.ink-secondary; horizontal-alignment: center; vertical-alignment: center; }
                                                 TouchArea { clicked => { root.set-opacity(0.70); } }
                                             }
                                             Rectangle {
                                                 y: (parent.height - self.height) / 2;
-                                                width: 52px; height: 36px; border-radius: Theme.radius-md;
-                                                background: Math.round(root.surface-opacity * 100) == 85 ? Theme.line : Theme.chrome-bg;
-                                                border-width: 1px; border-color: Math.round(root.surface-opacity * 100) == 85 ? Theme.ink-faint : Theme.line;
-                                                Text { width: parent.width; height: parent.height; text: "85%"; font-size: Theme.type-caption.size; font-weight: 500; color: Theme.ink-secondary; horizontal-alignment: center; vertical-alignment: center; }
+                                                width: 52px; height: 32px; border-radius: Theme.radius-md;
+                                                background: Math.round(root.surface-opacity * 100) == 85 ? Theme.selected-bg : Theme.chrome-bg;
+                                                border-width: 1px; border-color: Math.round(root.surface-opacity * 100) == 85 ? Theme.accent : Theme.line;
+                                                Text { width: parent.width; height: parent.height; text: "85%"; font-size: Theme.type-caption.size; font-weight: 500; color: Math.round(root.surface-opacity * 100) == 85 ? Theme.ink-primary : Theme.ink-secondary; horizontal-alignment: center; vertical-alignment: center; }
                                                 TouchArea { clicked => { root.set-opacity(0.85); } }
                                             }
                                             Rectangle {
                                                 y: (parent.height - self.height) / 2;
-                                                width: 52px; height: 36px; border-radius: Theme.radius-md;
-                                                background: Math.round(root.surface-opacity * 100) == 100 ? Theme.line : Theme.chrome-bg;
-                                                border-width: 1px; border-color: Math.round(root.surface-opacity * 100) == 100 ? Theme.ink-faint : Theme.line;
-                                                Text { width: parent.width; height: parent.height; text: "100%"; font-size: Theme.type-caption.size; font-weight: 500; color: Theme.ink-secondary; horizontal-alignment: center; vertical-alignment: center; }
+                                                width: 52px; height: 32px; border-radius: Theme.radius-md;
+                                                background: Math.round(root.surface-opacity * 100) == 100 ? Theme.selected-bg : Theme.chrome-bg;
+                                                border-width: 1px; border-color: Math.round(root.surface-opacity * 100) == 100 ? Theme.accent : Theme.line;
+                                                Text { width: parent.width; height: parent.height; text: "100%"; font-size: Theme.type-caption.size; font-weight: 500; color: Math.round(root.surface-opacity * 100) == 100 ? Theme.ink-primary : Theme.ink-secondary; horizontal-alignment: center; vertical-alignment: center; }
                                                 TouchArea { clicked => { root.set-opacity(1.00); } }
                                             }
                                         }
@@ -2550,7 +2580,7 @@ export component StudioWindow inherits Window {
                                     // Card 1: Hands-Free Toggle
                                     card_toggle := Rectangle {
                                         horizontal-stretch: 1;
-                                        height: 68px;
+                                        min-height: 68px;
                                         border-radius: Theme.radius-lg;
                                         background: root.trigger-mode == 0 ? Theme.selected-bg : (toggle_touch.has-hover ? Theme.chrome-bg : Theme.sunken-bg);
                                         border-width: 1px;
@@ -2561,6 +2591,8 @@ export component StudioWindow inherits Window {
                                         HorizontalLayout {
                                             padding-left: Theme.space-16;
                                             padding-right: Theme.space-16;
+                                            padding-top: Theme.space-12;
+                                            padding-bottom: Theme.space-12;
                                             spacing: Theme.space-16;
                                             alignment: start;
 
@@ -2602,6 +2634,7 @@ export component StudioWindow inherits Window {
                                                     text: "Tap key once to start listening, tap again to stop";
                                                     font-size: Theme.type-label.size;
                                                     color: root.trigger-mode == 0 ? Theme.ink-secondary : Theme.ink-muted;
+                                                    wrap: word-wrap;
                                                 }
                                             }
                                         }
@@ -2616,7 +2649,7 @@ export component StudioWindow inherits Window {
                                     // Card 2: Push to Talk (Hold)
                                     card_ptt := Rectangle {
                                         horizontal-stretch: 1;
-                                        height: 68px;
+                                        min-height: 68px;
                                         border-radius: Theme.radius-lg;
                                         background: root.trigger-mode == 1 ? Theme.selected-bg : (ptt_touch.has-hover ? Theme.chrome-bg : Theme.sunken-bg);
                                         border-width: 1px;
@@ -2627,6 +2660,8 @@ export component StudioWindow inherits Window {
                                         HorizontalLayout {
                                             padding-left: Theme.space-16;
                                             padding-right: Theme.space-16;
+                                            padding-top: Theme.space-12;
+                                            padding-bottom: Theme.space-12;
                                             spacing: Theme.space-16;
                                             alignment: start;
 
@@ -2668,6 +2703,7 @@ export component StudioWindow inherits Window {
                                                     text: "Hold key down continuously while speaking, release to transcribe";
                                                     font-size: Theme.type-label.size;
                                                     color: root.trigger-mode == 1 ? Theme.ink-secondary : Theme.ink-muted;
+                                                    wrap: word-wrap;
                                                 }
                                             }
                                         }
@@ -2711,7 +2747,7 @@ export component StudioWindow inherits Window {
 
                                 // Card 1: Headset Always-On (legacy)
                                 Rectangle {
-                                    height: 76px;
+                                    min-height: 76px;
                                     border-radius: Theme.radius-lg;
                                     background: root.capture-mode == 0 ? Theme.selected-bg : Theme.sunken-bg;
                                     border-width: 1px;
@@ -2722,6 +2758,8 @@ export component StudioWindow inherits Window {
                                     HorizontalLayout {
                                         padding-left: Theme.space-16;
                                         padding-right: Theme.space-16;
+                                        padding-top: Theme.space-12;
+                                        padding-bottom: Theme.space-12;
                                         spacing: Theme.space-16;
                                         alignment: start;
 
@@ -2769,7 +2807,7 @@ export component StudioWindow inherits Window {
 
                                 // Card 2: Dual-Mic Splice (bridge)
                                 Rectangle {
-                                    height: 76px;
+                                    min-height: 76px;
                                     border-radius: Theme.radius-lg;
                                     background: root.capture-mode == 1 ? Theme.selected-bg : Theme.sunken-bg;
                                     border-width: 1px;
@@ -2780,6 +2818,8 @@ export component StudioWindow inherits Window {
                                     HorizontalLayout {
                                         padding-left: Theme.space-16;
                                         padding-right: Theme.space-16;
+                                        padding-top: Theme.space-12;
+                                        padding-bottom: Theme.space-12;
                                         spacing: Theme.space-16;
                                         alignment: start;
 
@@ -2805,6 +2845,7 @@ export component StudioWindow inherits Window {
                                             spacing: Theme.space-4;
                                             horizontal-stretch: 1;
                                             HorizontalLayout {
+                                                alignment: start;
                                                 spacing: Theme.space-8;
                                                 Text {
                                                     text: "Dual-Mic Splice";
@@ -2813,22 +2854,25 @@ export component StudioWindow inherits Window {
                                                     color: root.capture-mode == 1 ? Theme.ink-primary : Theme.ink-alt;
                                                     vertical-alignment: center;
                                                 }
-                                                Rectangle {
-                                                    height: 18px;
-                                                    border-radius: Theme.radius-sm;
-                                                    background: Theme.rec-idle-bg;
-                                                    border-width: 1px;
-                                                    border-color: Theme.success-dim;
-                                                    HorizontalLayout {
-                                                        padding-left: Theme.space-4;
-                                                        padding-right: Theme.space-4;
-                                                        Text {
-                                                             text: "RECOMMENDED";
-                                                            font-size: Theme.type-caption.size;
-                                                            font-weight: 600;
-                                                            font-family: Theme.font-mono;
-                                                            color: Theme.success;
-                                                            vertical-alignment: center;
+                                                VerticalLayout {
+                                                    alignment: center;
+                                                    Rectangle {
+                                                        height: 18px;
+                                                        border-radius: Theme.radius-sm;
+                                                        background: Theme.rec-idle-bg;
+                                                        border-width: 1px;
+                                                        border-color: Theme.success-dim;
+                                                        HorizontalLayout {
+                                                            padding-left: Theme.space-8;
+                                                            padding-right: Theme.space-8;
+                                                            Text {
+                                                                text: "RECOMMENDED";
+                                                                font-size: Theme.type-meta.size;
+                                                                font-weight: 600;
+                                                                font-family: Theme.font-mono;
+                                                                color: Theme.success;
+                                                                vertical-alignment: center;
+                                                            }
                                                         }
                                                     }
                                                 }
@@ -2850,7 +2894,7 @@ export component StudioWindow inherits Window {
 
                                 // Card 3: Onboard Only
                                 Rectangle {
-                                    height: 76px;
+                                    min-height: 76px;
                                     border-radius: Theme.radius-lg;
                                     background: root.capture-mode == 2 ? Theme.selected-bg : Theme.sunken-bg;
                                     border-width: 1px;
@@ -2861,6 +2905,8 @@ export component StudioWindow inherits Window {
                                     HorizontalLayout {
                                         padding-left: Theme.space-16;
                                         padding-right: Theme.space-16;
+                                        padding-top: Theme.space-12;
+                                        padding-bottom: Theme.space-12;
                                         spacing: Theme.space-16;
                                         alignment: start;
 
@@ -2983,7 +3029,7 @@ export component StudioWindow inherits Window {
                     // BOX 2: ACTIVATION TRIGGER KEY CARD
                     // =================================================================
                     trigger_card := Rectangle {
-                        background: Theme.card-alt;
+                        background: Theme.card-bg;
                         border-radius: Theme.radius-lg;
                         border-width: 1px;
                         border-color: Theme.line;
@@ -3029,12 +3075,12 @@ export component StudioWindow inherits Window {
 
                             // Primary slot row: binding display + record + reset, all inline.
                             HorizontalLayout {
-                                spacing: Theme.space-12;
+                                spacing: Theme.space-8;
 
                                 Rectangle {
                                     horizontal-stretch: 1;
-                                    height: 48px;
-                                    border-radius: Theme.radius-pill;
+                                    height: 44px;
+                                    border-radius: Theme.radius-md;
                                     background: Theme.chrome-bg;
                                     border-width: 1px;
                                     border-color: root.is-recording-key && root.recording-slot == 0 ? Theme.accent : Theme.line;
@@ -3062,8 +3108,8 @@ export component StudioWindow inherits Window {
                                         VerticalLayout {
                                             alignment: center;
                                             Rectangle {
-                                                height: 28px;
-                                                border-radius: Theme.radius-md;
+                                                height: 26px;
+                                                border-radius: Theme.radius-sm;
                                                 background: Theme.line;
                                                 border-width: 1px;
                                                 border-color: Theme.line-strong;
@@ -3087,8 +3133,8 @@ export component StudioWindow inherits Window {
                                 VerticalLayout {
                                     alignment: center;
                                     Rectangle {
-                                        width: 150px;
-                                        height: 48px;
+                                        width: 112px;
+                                        height: 44px;
                                         border-radius: Theme.radius-md;
                                         background: root.is-recording-key && root.recording-slot == 0 ? Theme.rec-arm-alt : (rec_p_touch.has-hover ? Theme.line : Theme.chrome-bg);
                                         border-width: 1px;
@@ -3123,8 +3169,8 @@ export component StudioWindow inherits Window {
                                 VerticalLayout {
                                     alignment: center;
                                     Rectangle {
-                                        width: 150px;
-                                        height: 48px;
+                                        width: 112px;
+                                        height: 44px;
                                         border-radius: Theme.radius-md;
                                         background: reset_p_touch.has-hover ? Theme.line : Theme.chrome-bg;
                                         border-width: 1px;
@@ -3154,12 +3200,12 @@ export component StudioWindow inherits Window {
 
                             // Secondary slot row: same inline pattern (Clear empties it).
                             HorizontalLayout {
-                                spacing: Theme.space-12;
+                                spacing: Theme.space-8;
 
                                 Rectangle {
                                     horizontal-stretch: 1;
-                                    height: 48px;
-                                    border-radius: Theme.radius-pill;
+                                    height: 44px;
+                                    border-radius: Theme.radius-md;
                                     background: Theme.chrome-bg;
                                     border-width: 1px;
                                     border-color: root.is-recording-key && root.recording-slot == 1 ? Theme.accent : Theme.line;
@@ -3187,8 +3233,8 @@ export component StudioWindow inherits Window {
                                         VerticalLayout {
                                             alignment: center;
                                             Rectangle {
-                                                height: 28px;
-                                                border-radius: Theme.radius-md;
+                                                height: 26px;
+                                                border-radius: Theme.radius-sm;
                                                 background: Theme.line;
                                                 border-width: 1px;
                                                 border-color: Theme.line-strong;
@@ -3212,8 +3258,8 @@ export component StudioWindow inherits Window {
                                 VerticalLayout {
                                     alignment: center;
                                     Rectangle {
-                                        width: 150px;
-                                        height: 48px;
+                                        width: 112px;
+                                        height: 44px;
                                         border-radius: Theme.radius-md;
                                         background: root.is-recording-key && root.recording-slot == 1 ? Theme.rec-arm-alt : (rec_s_touch.has-hover ? Theme.line : Theme.chrome-bg);
                                         border-width: 1px;
@@ -3248,8 +3294,8 @@ export component StudioWindow inherits Window {
                                 VerticalLayout {
                                     alignment: center;
                                     Rectangle {
-                                        width: 150px;
-                                        height: 48px;
+                                        width: 112px;
+                                        height: 44px;
                                         border-radius: Theme.radius-md;
                                         background: clear_s_touch.has-hover ? Theme.line : Theme.chrome-bg;
                                         border-width: 1px;
@@ -3325,7 +3371,7 @@ export component StudioWindow inherits Window {
                     // BOX 3: CANCEL TRIGGER KEYS CARD
                     // =================================================================
                     cancel_card := Rectangle {
-                        background: Theme.card-alt;
+                        background: Theme.card-bg;
                         border-radius: Theme.radius-lg;
                         border-width: 1px;
                         border-color: Theme.line;
@@ -3371,12 +3417,12 @@ export component StudioWindow inherits Window {
 
                             // Primary cancel slot row (Slot 2)
                             HorizontalLayout {
-                                spacing: Theme.space-12;
+                                spacing: Theme.space-8;
 
                                 Rectangle {
                                     horizontal-stretch: 1;
-                                    height: 48px;
-                                    border-radius: Theme.radius-pill;
+                                    height: 44px;
+                                    border-radius: Theme.radius-md;
                                     background: Theme.chrome-bg;
                                     border-width: 1px;
                                     border-color: root.is-recording-key && root.recording-slot == 2 ? Theme.accent : Theme.line;
@@ -3404,8 +3450,8 @@ export component StudioWindow inherits Window {
                                         VerticalLayout {
                                             alignment: center;
                                             Rectangle {
-                                                height: 28px;
-                                                border-radius: Theme.radius-md;
+                                                height: 26px;
+                                                border-radius: Theme.radius-sm;
                                                 background: Theme.line;
                                                 border-width: 1px;
                                                 border-color: Theme.line-strong;
@@ -3429,8 +3475,8 @@ export component StudioWindow inherits Window {
                                 VerticalLayout {
                                     alignment: center;
                                     Rectangle {
-                                        width: 150px;
-                                        height: 48px;
+                                        width: 112px;
+                                        height: 44px;
                                         border-radius: Theme.radius-md;
                                         background: root.is-recording-key && root.recording-slot == 2 ? Theme.rec-arm-alt : (rec_cp_touch.has-hover ? Theme.line : Theme.chrome-bg);
                                         border-width: 1px;
@@ -3465,8 +3511,8 @@ export component StudioWindow inherits Window {
                                 VerticalLayout {
                                     alignment: center;
                                     Rectangle {
-                                        width: 150px;
-                                        height: 48px;
+                                        width: 112px;
+                                        height: 44px;
                                         border-radius: Theme.radius-md;
                                         background: reset_cp_touch.has-hover ? Theme.line : Theme.chrome-bg;
                                         border-width: 1px;
@@ -3496,12 +3542,12 @@ export component StudioWindow inherits Window {
 
                             // Secondary cancel slot row (Slot 3)
                             HorizontalLayout {
-                                spacing: Theme.space-12;
+                                spacing: Theme.space-8;
 
                                 Rectangle {
                                     horizontal-stretch: 1;
-                                    height: 48px;
-                                    border-radius: Theme.radius-pill;
+                                    height: 44px;
+                                    border-radius: Theme.radius-md;
                                     background: Theme.chrome-bg;
                                     border-width: 1px;
                                     border-color: root.is-recording-key && root.recording-slot == 3 ? Theme.accent : Theme.line;
@@ -3529,8 +3575,8 @@ export component StudioWindow inherits Window {
                                         VerticalLayout {
                                             alignment: center;
                                             Rectangle {
-                                                height: 28px;
-                                                border-radius: Theme.radius-md;
+                                                height: 26px;
+                                                border-radius: Theme.radius-sm;
                                                 background: Theme.line;
                                                 border-width: 1px;
                                                 border-color: Theme.line-strong;
@@ -3554,8 +3600,8 @@ export component StudioWindow inherits Window {
                                 VerticalLayout {
                                     alignment: center;
                                     Rectangle {
-                                        width: 150px;
-                                        height: 48px;
+                                        width: 112px;
+                                        height: 44px;
                                         border-radius: Theme.radius-md;
                                         background: root.is-recording-key && root.recording-slot == 3 ? Theme.rec-arm-alt : (rec_cs_touch.has-hover ? Theme.line : Theme.chrome-bg);
                                         border-width: 1px;
@@ -3590,8 +3636,8 @@ export component StudioWindow inherits Window {
                                 VerticalLayout {
                                     alignment: center;
                                     Rectangle {
-                                        width: 150px;
-                                        height: 48px;
+                                        width: 112px;
+                                        height: 44px;
                                         border-radius: Theme.radius-md;
                                         background: clear_cs_touch.has-hover ? Theme.line : Theme.chrome-bg;
                                         border-width: 1px;
@@ -3632,7 +3678,7 @@ export component StudioWindow inherits Window {
                     // BOX 4: STARTUP & SYSTEM CARD
                     // =================================================================
                     startup_card := Rectangle {
-                        background: Theme.card-alt;
+                        background: Theme.card-bg;
                         border-radius: Theme.radius-lg;
                         border-width: 1px;
                         border-color: Theme.line;
@@ -3661,7 +3707,7 @@ export component StudioWindow inherits Window {
                                         letter-spacing: 0.5px;
                                     }
                                     Text {
-                                        text: "Windows background boot integration and system tray preferences";
+                                        text: "Background boot integration and system tray preferences";
                                         font-size: Theme.type-label.size;
                                         font-weight: Theme.type-label.weight;
                                         color: Theme.ink-secondary;
@@ -3671,7 +3717,7 @@ export component StudioWindow inherits Window {
                                     alignment: center;
                                     InfoTooltip {
                                         align-right: true;
-                                        tip: "Registers Sotto to launch silently in the background when logging into Windows.";
+                                        tip: "Registers Sotto to launch silently in the background when you sign in.";
                                     }
                                 }
                             }
@@ -3686,13 +3732,13 @@ export component StudioWindow inherits Window {
                                     horizontal-stretch: 1;
 
                                     Text {
-                                        text: "Launch on Windows Startup";
+                                        text: "Launch on System Startup";
                                         font-size: Theme.type-body.size;
                                         font-weight: 600;
                                         color: Theme.ink-primary;
                                     }
                                     Text {
-                                        text: "Automatically start Sotto in the system tray when logging into Windows";
+                                        text: "Automatically start Sotto in the system tray when signing in";
                                         font-size: Theme.type-label.size;
                                         font-weight: Theme.type-label.weight;
                                         color: Theme.ink-secondary;
@@ -3734,7 +3780,7 @@ export component StudioWindow inherits Window {
                     // BOX 5: FEEDBACK & MEDIA CARD
                     // =================================================================
                     feedback_card := Rectangle {
-                        background: Theme.card-alt;
+                        background: Theme.card-bg;
                         border-radius: Theme.radius-lg;
                         border-width: 1px;
                         border-color: Theme.line;
@@ -3772,7 +3818,7 @@ export component StudioWindow inherits Window {
                                     alignment: center;
                                     InfoTooltip {
                                         align-right: true;
-                                        tip: "Uses Windows SMTC to pause active media (Spotify, YouTube, VLC) during dictation and resumes 140ms after text is typed. Active calls (Zoom, Teams, Slack) are never paused.";
+                                        tip: "Uses OS media controls to pause active media (Spotify, YouTube, VLC) during dictation and resumes 140ms after text is typed. Active calls (Zoom, Teams, Slack) are never paused.";
                                     }
                                 }
                             }
@@ -3962,6 +4008,6 @@ export component StudioWindow inherits Window {
                 }
             }
         }
+        }
     }
-}
 }

@@ -225,13 +225,29 @@ pub fn recording_keyup_action(pending_mod: u32) -> RecordingKeyup {
     }
 }
 
+enum HookDispatchMsg {
+    Event {
+        event: HotkeyEvent,
+        log: &'static str,
+    },
+    CancelKey(u32),
+    CancelMouse,
+    RecordCapture {
+        mods: u32,
+        key: Option<u32>,
+        btn: i32,
+        capture: Arc<dyn Fn(u32, Option<u32>, i32) + Send + Sync + 'static>,
+    },
+    Shutdown,
+}
+
 /// Live state shared with the low-level mouse hook proc (which cannot capture).
 /// `mice` holds (button, required-mods-mask) pairs from all armed bindings.
 struct MouseLiveState {
     mice: Arc<Mutex<Vec<(i32, u32)>>>,
     mode: Arc<AtomicU8>,
     recording: Arc<AtomicBool>,
-    callback: Arc<dyn Fn(HotkeyEvent) + Send + Sync + 'static>,
+    dispatch_tx: std::sync::mpsc::Sender<HookDispatchMsg>,
 }
 
 static MOUSE_LIVE: RwLock<Option<MouseLiveState>> = RwLock::new(None);
@@ -240,7 +256,7 @@ static MOUSE_LIVE: RwLock<Option<MouseLiveState>> = RwLock::new(None);
 struct CancelLiveState {
     triggers: Arc<Mutex<Vec<crate::hotkey::TriggerBinding>>>,
     recording: Arc<AtomicBool>,
-    callback: Arc<dyn Fn(HotkeyEvent) + Send + Sync + 'static>,
+    dispatch_tx: std::sync::mpsc::Sender<HookDispatchMsg>,
 }
 
 static CANCEL_LIVE: RwLock<Option<CancelLiveState>> = RwLock::new(None);
@@ -258,44 +274,54 @@ fn mods_match(required: u32, current: u32) -> bool {
     (required & 0x000F) == (current & 0x000F)
 }
 
-fn check_cancel_key_trigger(vk: u32) -> Option<Arc<dyn Fn(HotkeyEvent) + Send + Sync + 'static>> {
+fn check_cancel_key_trigger(vk: u32) -> Option<std::sync::mpsc::Sender<HookDispatchMsg>> {
     let guard = CANCEL_LIVE.read().ok()?;
     let st = guard.as_ref()?;
     if !st.recording.load(Ordering::SeqCst) {
         return None;
     }
-    let triggers = st.triggers.lock().ok()?.clone();
+    let triggers = st.triggers.lock().ok()?;
+    if triggers.is_empty() {
+        return None;
+    }
     let current_mods = current_mod_mask();
-    for trig in triggers {
+    for trig in &*triggers {
         if let Some(trig_vk) = trig.key {
             if trig_vk == vk && mods_match(trig.mods, current_mods) {
-                return Some(Arc::clone(&st.callback));
+                return Some(st.dispatch_tx.clone());
             }
         }
     }
     None
 }
 
-fn check_cancel_mouse_trigger(msg: u32, l_param: isize) -> Option<Arc<dyn Fn(HotkeyEvent) + Send + Sync + 'static>> {
-    let guard = CANCEL_LIVE.read().ok()?;
-    let st = guard.as_ref()?;
-    if !st.recording.load(Ordering::SeqCst) {
+fn check_cancel_mouse_trigger(
+    msg: u32,
+    l_param: isize,
+) -> Option<std::sync::mpsc::Sender<HookDispatchMsg>> {
+    if msg != WM_XBUTTONDOWN && msg != WM_MBUTTONDOWN {
         return None;
     }
     let button = if msg == WM_XBUTTONDOWN {
         let data = unsafe { (*(l_param as *const MsllHookStruct)).mouse_data };
         classify_record_button(msg, ((data >> 16) & 0xFFFF) as u32)
-    } else if msg == WM_MBUTTONDOWN {
-        classify_record_button(msg, 0)
     } else {
-        None
+        classify_record_button(msg, 0)
     }?;
-    let triggers = st.triggers.lock().ok()?.clone();
+    let guard = CANCEL_LIVE.read().ok()?;
+    let st = guard.as_ref()?;
+    if !st.recording.load(Ordering::SeqCst) {
+        return None;
+    }
+    let triggers = st.triggers.lock().ok()?;
+    if triggers.is_empty() {
+        return None;
+    }
     let current_mods = current_mod_mask();
-    for trig in triggers {
+    for trig in &*triggers {
         if let Some(trig_btn) = trig.mouse {
             if trig_btn == button && mods_match(trig.mods, current_mods) {
-                return Some(Arc::clone(&st.callback));
+                return Some(st.dispatch_tx.clone());
             }
         }
     }
@@ -307,9 +333,8 @@ unsafe extern "system" fn keyboard_hook_proc(n_code: i32, w_param: usize, l_para
         let msg = w_param as u32;
         if (msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN) && !RECORD_ARMED.load(Ordering::SeqCst) {
             let kbd = &*(l_param as *const KbdllHookStruct);
-            if let Some(cb) = check_cancel_key_trigger(kbd.vk_code) {
-                println!("[Hotkey Engine] Cancel key triggered (vk=0x{:X})", kbd.vk_code);
-                cb(HotkeyEvent::CancelListening);
+            if let Some(tx) = check_cancel_key_trigger(kbd.vk_code) {
+                let _ = tx.send(HookDispatchMsg::CancelKey(kbd.vk_code));
                 return 1;
             }
         }
@@ -361,11 +386,16 @@ fn mods_held(mask: u32) -> bool {
 /// Returns Some(is_down) when the message is the press/release of any armed
 /// mouse trigger whose required modifiers are held. Never panics.
 fn match_mouse_trigger(msg: u32, l_param: isize) -> Option<bool> {
-    let mice: Vec<(i32, u32)> = MOUSE_LIVE
-        .read()
-        .ok()?
-        .as_ref()
-        .map(|st| st.mice.lock().map(|m| m.clone()).unwrap_or_default())?;
+    if msg != WM_XBUTTONDOWN
+        && msg != WM_XBUTTONUP
+        && msg != WM_MBUTTONDOWN
+        && msg != WM_MBUTTONUP
+    {
+        return None;
+    }
+    let guard = MOUSE_LIVE.read().ok()?;
+    let st = guard.as_ref()?;
+    let mice = st.mice.lock().ok()?;
     if mice.is_empty() {
         return None;
     }
@@ -406,11 +436,11 @@ fn handle_mouse_trigger(is_down: bool) {
             (
                 Arc::clone(&st.mode),
                 Arc::clone(&st.recording),
-                Arc::clone(&st.callback),
+                st.dispatch_tx.clone(),
             )
         })
     });
-    let Some((mode, recording, callback)) = snapshot else {
+    let Some((mode, recording, dispatch_tx)) = snapshot else {
         return;
     };
     let hold = mode.load(Ordering::SeqCst) == HotkeyMode::HoldToTalk as u8;
@@ -420,12 +450,16 @@ fn handle_mouse_trigger(is_down: bool) {
                 return;
             }
             if !recording.swap(true, Ordering::SeqCst) {
-                println!("[Hotkey Engine] Mouse trigger -> START listening (hold)");
-                callback(HotkeyEvent::StartListening);
+                let _ = dispatch_tx.send(HookDispatchMsg::Event {
+                    event: HotkeyEvent::StartListening,
+                    log: "[Hotkey Engine] Mouse trigger -> START listening (hold)",
+                });
             }
         } else if recording.swap(false, Ordering::SeqCst) {
-            println!("[Hotkey Engine] Mouse trigger -> STOP listening (release)");
-            callback(HotkeyEvent::StopListening);
+            let _ = dispatch_tx.send(HookDispatchMsg::Event {
+                event: HotkeyEvent::StopListening,
+                log: "[Hotkey Engine] Mouse trigger -> STOP listening (release)",
+            });
         }
     } else if is_down {
         if echo_suppressed() {
@@ -433,14 +467,16 @@ fn handle_mouse_trigger(is_down: bool) {
         }
         let was_rec = recording.load(Ordering::SeqCst);
         recording.store(!was_rec, Ordering::SeqCst);
-        println!(
-            "[Hotkey Engine] Mouse trigger -> {} listening (toggle)",
-            if was_rec { "STOP" } else { "START" }
-        );
-        callback(if was_rec {
-            HotkeyEvent::StopListening
+        let _ = dispatch_tx.send(if was_rec {
+            HookDispatchMsg::Event {
+                event: HotkeyEvent::StopListening,
+                log: "[Hotkey Engine] Mouse trigger -> STOP listening (toggle)",
+            }
         } else {
-            HotkeyEvent::StartListening
+            HookDispatchMsg::Event {
+                event: HotkeyEvent::StartListening,
+                log: "[Hotkey Engine] Mouse trigger -> START listening (toggle)",
+            }
         });
     }
 }
@@ -460,20 +496,36 @@ unsafe extern "system" fn mouse_hook_proc(n_code: i32, w_param: usize, l_param: 
                 classify_record_button(msg, 0)
             };
             if let Some(btn) = button {
-                // Drop the MOUSE_RECORDER lock BEFORE invoking capture, avoiding
-                // recursive mutex deadlock when capture calls complete_recording() ->
-                // set_record_hook(None) on this same mouse hook thread.
+                // Drop MOUSE_RECORDER lock and dispatch outside the OS hook proc so
+                // UI / recorder teardown never runs inside Windows' ~300ms LL timeout.
                 let capture_opt = MOUSE_RECORDER.lock().ok().and_then(|g| g.clone());
                 if let Some(capture) = capture_opt {
-                    // Fuse co-held keys (dual-signal presses) into one chord.
                     let key = held_nonmod_keys().into_iter().next();
-                    capture(current_mod_mask(), key, btn);
+                    let mods = current_mod_mask();
+                    let tx_opt = MOUSE_LIVE
+                        .read()
+                        .ok()
+                        .and_then(|g| g.as_ref().map(|st| st.dispatch_tx.clone()));
+                    if let Some(tx) = tx_opt {
+                        if let Err(std::sync::mpsc::SendError(HookDispatchMsg::RecordCapture {
+                            capture,
+                            ..
+                        })) = tx.send(HookDispatchMsg::RecordCapture {
+                            mods,
+                            key,
+                            btn,
+                            capture,
+                        }) {
+                            capture(mods, key, btn);
+                        }
+                    } else {
+                        capture(mods, key, btn);
+                    }
                     return 1;
                 }
             }
-        } else if let Some(cb) = check_cancel_mouse_trigger(msg, l_param) {
-            println!("[Hotkey Engine] Cancel mouse button triggered");
-            cb(HotkeyEvent::CancelListening);
+        } else if let Some(tx) = check_cancel_mouse_trigger(msg, l_param) {
+            let _ = tx.send(HookDispatchMsg::CancelMouse);
             return 1;
         } else if let Some(is_down) = match_mouse_trigger(msg, l_param) {
             handle_mouse_trigger(is_down);
@@ -600,11 +652,16 @@ pub struct HotkeyManager {
     thread_id: Arc<AtomicU32>,
     /// Keyboard combos armed as OS hotkeys: (slot id, mods, vk).
     armed_keys: Arc<Mutex<Vec<ArmedKey>>>,
-    /// Standalone-modifier slots polled by the watcher: (slot id, vk list).
-    armed_standalone: Arc<Mutex<Vec<(i32, Vec<u32>)>>>,
+    /// Standalone-modifier slots polled by the watcher: (slot id, vk list),
+    /// paired with a Condvar so idle time costs 0% CPU when empty.
+    armed_standalone: Arc<(Mutex<Vec<(i32, Vec<u32>)>>, std::sync::Condvar)>,
+    watcher_shutdown: Arc<AtomicBool>,
+    dispatch_tx: Option<std::sync::mpsc::Sender<HookDispatchMsg>>,
     mouse_thread_id: Arc<AtomicU32>,
     join_handle: Option<JoinHandle<()>>,
     mouse_join_handle: Option<JoinHandle<()>>,
+    watcher_join_handle: Option<JoinHandle<()>>,
+    dispatch_join_handle: Option<JoinHandle<()>>,
 }
 
 /// One OS-registered keyboard trigger: slot A (primary) or B (secondary).
@@ -652,7 +709,8 @@ impl HotkeyManager {
         let is_recording = Arc::new(AtomicBool::new(false));
         let thread_id = Arc::new(AtomicU32::new(0));
         let armed_keys = Arc::new(Mutex::new(Vec::<ArmedKey>::new()));
-        let armed_standalone = Arc::new(Mutex::new(Vec::<(i32, Vec<u32>)>::new()));
+        let armed_standalone = Arc::new((Mutex::new(Vec::<(i32, Vec<u32>)>::new()), std::sync::Condvar::new()));
+        let watcher_shutdown = Arc::new(AtomicBool::new(false));
         let mouse_thread_id = Arc::new(AtomicU32::new(0));
 
         let mode_clone = Arc::clone(&mode);
@@ -661,17 +719,48 @@ impl HotkeyManager {
         let armed_keys_clone = Arc::clone(&armed_keys);
         let cb = Arc::new(callback);
 
-        // Publish live state for the low-level mouse hook proc (type-erased:
-        // the proc cannot capture the generic callback). Latest manager wins.
+        // Asynchronous hook dispatch worker: keeps Win32 WH_KEYBOARD_LL / WH_MOUSE_LL
+        // hook procs sub-microsecond without stdout locks or callback blocking.
+        let (dispatch_tx, dispatch_rx) = std::sync::mpsc::channel::<HookDispatchMsg>();
+        let cb_dispatch = Arc::clone(&cb);
+        let dispatch_handle = thread::Builder::new()
+            .name("sotto-hotkey-dispatch".to_string())
+            .spawn(move || {
+                while let Ok(msg) = dispatch_rx.recv() {
+                    match msg {
+                        HookDispatchMsg::Event { event, log } => {
+                            println!("{}", log);
+                            cb_dispatch(event);
+                        }
+                        HookDispatchMsg::CancelKey(vk) => {
+                            println!("[Hotkey Engine] Cancel key triggered (vk=0x{:X})", vk);
+                            cb_dispatch(HotkeyEvent::CancelListening);
+                        }
+                        HookDispatchMsg::CancelMouse => {
+                            println!("[Hotkey Engine] Cancel mouse button triggered");
+                            cb_dispatch(HotkeyEvent::CancelListening);
+                        }
+                        HookDispatchMsg::RecordCapture {
+                            mods,
+                            key,
+                            btn,
+                            capture,
+                        } => {
+                            capture(mods, key, btn);
+                        }
+                        HookDispatchMsg::Shutdown => break,
+                    }
+                }
+            })
+            .ok();
+
+        // Publish live state for the low-level mouse hook proc (cannot block).
         {
-            let inner = Arc::clone(&cb);
-            let erased: Arc<dyn Fn(HotkeyEvent) + Send + Sync + 'static> =
-                Arc::new(move |evt| inner(evt));
             let state = MouseLiveState {
                 mice: Arc::new(Mutex::new(Vec::new())),
                 mode: Arc::clone(&mode),
                 recording: Arc::clone(&is_recording),
-                callback: erased,
+                dispatch_tx: dispatch_tx.clone(),
             };
             if let Ok(mut guard) = MOUSE_LIVE.write() {
                 *guard = Some(state);
@@ -679,13 +768,10 @@ impl HotkeyManager {
         }
 
         {
-            let inner = Arc::clone(&cb);
-            let erased: Arc<dyn Fn(HotkeyEvent) + Send + Sync + 'static> =
-                Arc::new(move |evt| inner(evt));
             let state = CancelLiveState {
                 triggers: Arc::new(Mutex::new(Vec::new())),
                 recording: Arc::clone(&is_recording),
-                callback: erased,
+                dispatch_tx: dispatch_tx.clone(),
             };
             if let Ok(mut guard) = CANCEL_LIVE.write() {
                 *guard = Some(state);
@@ -696,22 +782,39 @@ impl HotkeyManager {
 
         // Background watcher thread for standalone modifier-only bindings
         // (e.g. bare Ctrl), which Win32 RegisterHotKey does not dispatch.
-        // Polls every armed slot's VK set for fresh press edges.
+        // Sleeps via Condvar at 0% CPU whenever no standalone slot is armed.
         let m_mode = Arc::clone(&mode);
         let m_rec = Arc::clone(&is_recording);
         let m_standalone = Arc::clone(&armed_standalone);
+        let m_shutdown = Arc::clone(&watcher_shutdown);
         let m_cb = Arc::clone(&cb);
 
-        thread::Builder::new()
+        let watcher_handle = thread::Builder::new()
             .name("sotto-modifier-watcher".to_string())
             .spawn(move || {
                 let mut was_down: Vec<bool> = Vec::new();
+                let (ref lock, ref cvar) = *m_standalone;
                 loop {
-                    thread::sleep(Duration::from_millis(15));
-                    let slots: Vec<(i32, Vec<u32>)> = m_standalone
-                        .lock()
-                        .map(|s| s.clone())
-                        .unwrap_or_default();
+                    let slots: Vec<(i32, Vec<u32>)> = {
+                        let mut guard = match lock.lock() {
+                            Ok(g) => g,
+                            Err(_) => break,
+                        };
+                        while guard.is_empty() {
+                            if m_shutdown.load(Ordering::SeqCst) {
+                                return;
+                            }
+                            was_down.clear();
+                            guard = match cvar.wait(guard) {
+                                Ok(g) => g,
+                                Err(_) => return,
+                            };
+                        }
+                        if m_shutdown.load(Ordering::SeqCst) {
+                            return;
+                        }
+                        guard.clone()
+                    };
                     if was_down.len() != slots.len() {
                         was_down = vec![false; slots.len()];
                     }
@@ -734,6 +837,7 @@ impl HotkeyManager {
                         }
                         was_down[idx] = is_down;
                     }
+                    thread::sleep(Duration::from_millis(15));
                 }
             })
             .ok();
@@ -894,9 +998,13 @@ impl HotkeyManager {
                 thread_id,
                 armed_keys,
                 armed_standalone,
+                watcher_shutdown,
+                dispatch_tx: Some(dispatch_tx),
                 mouse_thread_id,
                 join_handle: Some(handle),
                 mouse_join_handle: mouse_handle,
+                watcher_join_handle: watcher_handle,
+                dispatch_join_handle: dispatch_handle,
             }),
             Ok(Err(e)) => Err(e),
             Err(e) => Err(format!("Hotkey initialization timed out: {}", e)),
@@ -1080,8 +1188,12 @@ impl HotkeyManager {
         if let Ok(mut guard) = self.armed_keys.lock() {
             *guard = keys;
         }
-        if let Ok(mut guard) = self.armed_standalone.lock() {
-            *guard = standalone;
+        {
+            let (ref lock, ref cvar) = *self.armed_standalone;
+            if let Ok(mut guard) = lock.lock() {
+                *guard = standalone;
+                cvar.notify_all();
+            }
         }
         if let Ok(guard) = MOUSE_LIVE.read() {
             if let Some(ref st) = *guard {
@@ -1137,6 +1249,11 @@ impl HotkeyManager {
 
 impl Drop for HotkeyManager {
     fn drop(&mut self) {
+        self.watcher_shutdown.store(true, Ordering::SeqCst);
+        self.armed_standalone.1.notify_all();
+        if let Some(handle) = self.watcher_join_handle.take() {
+            let _ = handle.join();
+        }
         let tid = self.thread_id.load(Ordering::SeqCst);
         if tid != 0 {
             unsafe {
@@ -1153,6 +1270,12 @@ impl Drop for HotkeyManager {
             }
         }
         if let Some(handle) = self.mouse_join_handle.take() {
+            let _ = handle.join();
+        }
+        if let Some(tx) = self.dispatch_tx.take() {
+            let _ = tx.send(HookDispatchMsg::Shutdown);
+        }
+        if let Some(handle) = self.dispatch_join_handle.take() {
             let _ = handle.join();
         }
     }

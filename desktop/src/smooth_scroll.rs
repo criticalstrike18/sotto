@@ -270,13 +270,13 @@ pub const LIST_OVERSCROLL_PX: f32 = 16.0;
 pub const CHAR_ADVANCE_PX: f32 = 6.4;
 
 /// Base height of a card: 24px vertical padding (Theme.space-12 * 2) + 26px header row
-/// (defined by the 26px copy button) + 8px header/body spacing (Theme.space-8) + one 19px text line.
-/// Calibrated against laid-out cards: single-line cards measure exactly 77px on the standardized grid.
-pub const CARD_BASE_HEIGHT: f32 = 77.0;
+/// (defined by the 26px copy button) + 8px header/body spacing (Theme.space-8) + one 17px text line.
+/// Calibrated against laid-out cards: single-line 14px Inter cards measure exactly 75px.
+pub const CARD_BASE_HEIGHT: f32 = 75.0;
 
-/// Line height in pixels for 14px DM Sans transcript text. Calibrated against layout:
-/// a 3-line card measures exactly base + 2 lines (113 = 77 + 2*18).
-pub const LINE_HEIGHT_PX: f32 = 18.0;
+/// Line height in pixels for 14px Inter transcript text. Calibrated against layout:
+/// a 3-line card measures exactly base + 2 lines (109 = 75 + 2*17).
+pub const LINE_HEIGHT_PX: f32 = 17.0;
 
 /// Minimum visible history-list height in logical pixels.
 pub const MIN_VISIBLE_PX: f32 = 100.0;

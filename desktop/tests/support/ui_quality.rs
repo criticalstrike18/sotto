@@ -45,7 +45,7 @@ pub fn contrast_ratio(fg: &str, bg: &str) -> Option<f32> {
 pub const INK_PRIMARY: &str = "#fafafa";
 pub const INK_BODY: &str = "#fafafa";
 pub const INK_SECONDARY: &str = "#a1a1aa";
-pub const INK_MUTED: &str = "#71717a";
+pub const INK_MUTED: &str = "#8b8b96";
 pub const ACCENT: &str = "#38bdf8";
 pub const SUCCESS: &str = "#4ade80";
 pub const CARD_BG: &str = "#121215";
@@ -74,8 +74,8 @@ pub fn stage_bg(mode: i32) -> &'static str {
 // Rows = active-state 0..=4, cols = option A/B/C (0/1/2).
 pub const PILL_WIDTHS: [[f32; 3]; 5] = [
     [48.0, 44.0, 56.0],   // Idle: Micro Mic / Standby LED / Edge Accent
-    [110.0, 84.0, 100.0], // Listening
-    [72.0, 80.0, 74.0],   // Transcribe
+    [112.0, 84.0, 100.0], // Listening
+    [72.0, 80.0, 76.0],   // Transcribe
     [60.0, 68.0, 64.0],   // Success
     [60.0, 60.0, 64.0],   // Error (falls through to default branch)
 ];
