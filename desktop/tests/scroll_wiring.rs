@@ -620,12 +620,20 @@ fn test_scroll_performance_and_memory_wiring_contracts() {
     assert!(main_rs.contains("ptsLocation"), "WM_GESTURE pan must read ptsLocation coordinates");
     assert!(main_rs.contains("drop_studio_instance"), "Studio close must drop instance and release caches");
     assert!(
-        main_rs.contains("hydrate_studio_history_nonblocking(studio, history_queue.db(), 500)"),
-        "Initial Studio history load must use non-blocking 500-item hydration"
+        main_rs.contains("reset_all_studio_scrollers"),
+        "Studio close/reset must clear scroller offsets so reopening starts cleanly at top"
+    );
+    assert!(
+        main_rs.contains("effective_studio_metrics") && main_rs.contains("effective_tab_visible_h"),
+        "Pre-show hydration and per-tab layout must use realized metrics with 1040x840 fallback"
+    );
+    assert!(
+        main_rs.contains("STUDIO_LAYOUT_KEY"),
+        "Virtual layout computation must memoize generation/width/scale across wheel events"
     );
     assert!(
         main_rs.contains("hydrate_studio_history_nonblocking(s, history_queue.db(), 500)"),
-        "Reopened Studio history load must use non-blocking 500-item hydration"
+        "Studio history load must use non-blocking 500-item hydration"
     );
 
     // 3. Bounded + non-blocking + deduplicated app icon cache.
@@ -648,6 +656,7 @@ fn test_svg_branding_and_desktop_icon_wiring() {
         "assets/icons/sotto-light.svg",
         "assets/icons/sotto-mark-dark.svg",
         "assets/icons/sotto-mark-light.svg",
+        "assets/icons/sotto-tray-dark.svg",
         "assets/icons/sotto.ico",
         "assets/icons/sotto-tray-dark-16.png",
         "assets/icons/sotto-tray-dark-32.png",
@@ -657,9 +666,10 @@ fn test_svg_branding_and_desktop_icon_wiring() {
         assert!(manifest_dir.join(asset).exists(), "missing branding asset: {asset}");
     }
 
-    assert!(!hud.contains("\"Sotto Studio\""), "Studio header text should be replaced by Sotto SVG branding");
-    assert!(hud.contains("brand-logo"), "Studio header brand-logo missing");
-    assert!(hud.contains("sotto-dark.svg"), "Studio header should use dark-mode SVG logo");
+    assert!(!hud.contains("\"Sotto Studio\""), "Studio header should show Sotto lockup instead of Studio label");
+    assert!(hud.contains("brand-logo := HorizontalLayout"), "Studio header brand-logo should be a transparent inline lockup without a boxed background");
+    assert!(hud.contains("sotto-tray-dark.svg"), "Studio header should render integrated transparent SVG waveform mark");
+    assert!(hud.contains("\"Sotto\"") && hud.contains("Theme.type-display"), "Studio header should use Playfair Display wordmark for Sotto");
     assert!(hud.contains("sotto-mark-dark.svg"), "Window icon should use Sotto mark SVG");
 
     assert!(build_rs.contains("assets/icons/sotto.ico"), "Windows resource icon missing from build.rs");

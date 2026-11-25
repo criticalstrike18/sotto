@@ -249,13 +249,14 @@ pub const ROW_SPACING: f32 = 8.0;
 /// are completely visible with comfortable breathing room above the viewport edge across all window resizes.
 pub const LIST_BOTTOM_PADDING: f32 = 16.0;
 
-/// Chrome reserved above the history list: title row + tab bar + stats bar +
-/// gaps, measured from an offscreen render (list starts 132px below the window
-/// top at any scale; logical px are DPI-independent). The old 156px value
-/// overstated chrome by ~26px, parking max scroll that far past the content
-/// and leaving a permanent end-of-list void. Keep in sync with the
-/// `history-viewport-height` formula in hud.slint.
-pub const CHROME_RESERVED_PX: f32 = 132.0;
+/// Chrome reserved above Tab 0 (`history-container`): outer padding (24*2=48) +
+/// header row (36) + outer gap (16) + stats bar (44) + tab0 gap (12) = 156px,
+/// matching `history-container.height` (`self.height - 156px`) in `hud.slint`.
+pub const CHROME_RESERVED_PX: f32 = 156.0;
+
+/// Chrome reserved above Tab 1/2 scroll containers (`providers_container` / `custom_container`):
+/// outer padding (48) + header row (36) + outer gap (16) = 100px.
+pub const CONTENT_CHROME_RESERVED_PX: f32 = 100.0;
 
 /// Extra end-of-list overscroll in pixels. The estimator is calibrated to err
 /// on the high side (observed range 0..+17 over 50 real records at 5 widths;
@@ -379,7 +380,7 @@ thread_local! {
 }
 
 /// Default virtualization buffer rendered above and below the visible viewport.
-pub const VIRTUAL_CUSHION_PX: f32 = 350.0;
+pub const VIRTUAL_CUSHION_PX: f32 = 450.0;
 
 /// Minimum hysteresis thresholds before rebuilding the virtualized slice during fast flings.
 pub const REFILL_DISTANCE_PX: f32 = 180.0;
@@ -529,6 +530,14 @@ pub fn any_studio_scroller_animating() -> bool {
     STUDIO_SCROLLER.with(|s| s.borrow().is_animating())
         || PROVIDERS_SCROLLER.with(|s| s.borrow().is_animating())
         || CUSTOM_SCROLLER.with(|s| s.borrow().is_animating())
+}
+
+/// Resets all Studio tab scroll engines back to top (`0.0`) so tearing down
+/// or reopening the Studio window never leaves stale scroll offsets.
+pub fn reset_all_studio_scrollers() {
+    STUDIO_SCROLLER.with(|s| s.borrow_mut().jump_to(0.0));
+    PROVIDERS_SCROLLER.with(|s| s.borrow_mut().jump_to(0.0));
+    CUSTOM_SCROLLER.with(|s| s.borrow_mut().jump_to(0.0));
 }
 
 #[cfg(test)]

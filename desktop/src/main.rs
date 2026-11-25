@@ -51,6 +51,7 @@ thread_local! {
         RefCell::new(sotto_desktop::smooth_scroll::HistoryLayout::default());
     static STUDIO_CACHED_WINDOW: RefCell<Option<(sotto_desktop::smooth_scroll::VirtualWindow, f32, Instant)>> =
         const { RefCell::new(None) };
+    static STUDIO_LAYOUT_KEY: RefCell<Option<(u64, u32, u32)>> = const { RefCell::new(None) };
 }
 
 static ACTIVE_OPT_IDLE: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
@@ -97,6 +98,8 @@ fn drop_studio_instance(studio_visible: &Arc<AtomicBool>) {
     });
     STUDIO_HISTORY_LAYOUT.with(|l| *l.borrow_mut() = Default::default());
     STUDIO_CACHED_WINDOW.with(|w| *w.borrow_mut() = None);
+    STUDIO_LAYOUT_KEY.with(|k| *k.borrow_mut() = None);
+    sotto_desktop::smooth_scroll::reset_all_studio_scrollers();
     app_icon::clear_ui_icon_cache();
     STUDIO_INSTANCE.with(|cell| {
         if let Some(s) = cell.borrow_mut().take() {
@@ -106,6 +109,53 @@ fn drop_studio_instance(studio_visible: &Arc<AtomicBool>) {
     });
     studio_visible.store(false, Ordering::SeqCst);
     trim_working_set();
+}
+
+/// Returns `(phys_w, logical_h, scale, realized)` using Studio's default 1040x840
+/// geometry when queried synchronously before winit has realized the native window.
+fn effective_studio_metrics(s: &StudioWindow) -> (u32, f32, f32, bool) {
+    let scale = s.window().scale_factor().max(1.0);
+    let win_size = s.window().size();
+    if win_size.width > 0 && win_size.height > 0 {
+        (win_size.width, win_size.height as f32 / scale, scale, true)
+    } else {
+        let fallback_w = (1040.0 * scale).round() as u32;
+        (fallback_w, 840.0, scale, false)
+    }
+}
+
+/// Returns `(phys_w, visible_h, scale, realized)` calibrated per Studio tab
+/// (`156px` chrome on Tab 0 Dictations; `100px` chrome on Tab 1/Tab 2).
+fn effective_tab_visible_h(s: &StudioWindow, active_tab: i32) -> (u32, f32, f32, bool) {
+    let (phys_w, logical_h, scale, realized) = effective_studio_metrics(s);
+    let reserved = if active_tab == 0 {
+        sotto_desktop::smooth_scroll::CHROME_RESERVED_PX
+    } else {
+        sotto_desktop::smooth_scroll::CONTENT_CHROME_RESERVED_PX
+    };
+    let visible_h = if realized {
+        let prop_h = match active_tab {
+            1 => s.get_providers_viewport_height(),
+            2 => s.get_custom_viewport_height(),
+            _ => s.get_history_viewport_height(),
+        };
+        if prop_h > 50.0 {
+            prop_h
+        } else {
+            sotto_desktop::smooth_scroll::compute_visible_height(
+                logical_h,
+                reserved,
+                sotto_desktop::smooth_scroll::MIN_VISIBLE_PX,
+            )
+        }
+    } else {
+        sotto_desktop::smooth_scroll::compute_visible_height(
+            logical_h,
+            reserved,
+            sotto_desktop::smooth_scroll::MIN_VISIBLE_PX,
+        )
+    };
+    (phys_w, visible_h, scale, realized)
 }
 
 fn patch_studio_icons_from_cache() {
@@ -125,7 +175,7 @@ fn patch_studio_icons_from_cache() {
             any
         });
         if changed {
-            let view_h = s.get_history_viewport_height().max(sotto_desktop::smooth_scroll::MIN_VISIBLE_PX);
+            let (_, view_h, _, _) = effective_tab_visible_h(s, 0);
             sync_history_virtual_window(s, view_h, true);
         }
     });
@@ -181,8 +231,17 @@ fn hydrate_studio_history_nonblocking(s: &StudioWindow, db: &db::HistoryDb, limi
 }
 
 fn recompute_studio_history_layout(win_w: u32, scale: f32) -> (i32, f32) {
+    let gen = STUDIO_HISTORY_GEN.load(Ordering::Relaxed);
+    let key = (gen, win_w, scale.to_bits());
+    if STUDIO_LAYOUT_KEY.with(|k| *k.borrow() == Some(key)) {
+        return STUDIO_HISTORY_LAYOUT.with(|l| {
+            let layout = l.borrow();
+            (layout.heights.len() as i32, layout.total_content_h)
+        });
+    }
+
     let cpl = sotto_desktop::smooth_scroll::chars_per_line_for(win_w, scale);
-    STUDIO_HISTORY_CACHE.with(|cache| {
+    let res = STUDIO_HISTORY_CACHE.with(|cache| {
         let items = cache.borrow();
         let layout = sotto_desktop::smooth_scroll::compute_history_layout(
             items.iter().map(|it| it.transcript.as_str()),
@@ -192,7 +251,10 @@ fn recompute_studio_history_layout(win_w: u32, scale: f32) -> (i32, f32) {
         let count = items.len() as i32;
         STUDIO_HISTORY_LAYOUT.with(|l| *l.borrow_mut() = layout);
         (count, total_h)
-    })
+    });
+    STUDIO_LAYOUT_KEY.with(|k| *k.borrow_mut() = Some(key));
+    STUDIO_CACHED_WINDOW.with(|cw| *cw.borrow_mut() = None);
+    res
 }
 
 fn sync_history_virtual_window(s: &StudioWindow, visible_h: f32, force_refill: bool) {
@@ -256,11 +318,12 @@ fn sync_history_virtual_window(s: &StudioWindow, visible_h: f32, force_refill: b
 }
 
 fn sync_history_dimensions_and_window(s: &StudioWindow, visible_h: f32, force_refill: bool) -> (i32, f32) {
-    let win_size = s.window().size();
-    let scale = s.window().scale_factor().max(1.0);
-    let (count, total_content_h) = recompute_studio_history_layout(win_size.width, scale);
+    let (phys_w, _, scale, _) = effective_studio_metrics(s);
+    let (count, total_content_h) = recompute_studio_history_layout(phys_w, scale);
     sotto_desktop::smooth_scroll::STUDIO_SCROLLER.with(|scroller| {
-        scroller.borrow_mut().set_dimensions(total_content_h, visible_h);
+        let mut eng = scroller.borrow_mut();
+        eng.set_dimensions(total_content_h, visible_h);
+        s.set_history_scroll_progress(eng.progress());
     });
     let can_scroll = total_content_h > visible_h;
     s.set_history_count(count);
@@ -275,22 +338,19 @@ fn set_studio_history_list(s: &StudioWindow, items: Vec<HistoryItem>) {
     let count = items.len() as i32;
     STUDIO_HISTORY_CACHE.with(|cache| *cache.borrow_mut() = items);
     STUDIO_CACHED_WINDOW.with(|cw| *cw.borrow_mut() = None);
+    STUDIO_LAYOUT_KEY.with(|k| *k.borrow_mut() = None);
     let empty_full: Rc<VecModel<HistoryItem>> = Rc::new(VecModel::default());
     s.set_history_items(ModelRc::from(empty_full));
     STUDIO_HISTORY_GEN.fetch_add(1, Ordering::SeqCst);
 
-    let view_h_prop = s.get_history_viewport_height();
-    let visible_h = if view_h_prop > 50.0 {
-        view_h_prop
-    } else {
-        let win_size = s.window().size();
-        let scale = s.window().scale_factor().max(1.0);
-        sotto_desktop::smooth_scroll::compute_visible_height(
-            win_size.height as f32 / scale,
-            sotto_desktop::smooth_scroll::CHROME_RESERVED_PX,
-            sotto_desktop::smooth_scroll::MIN_VISIBLE_PX,
-        )
-    };
+    sotto_desktop::smooth_scroll::STUDIO_SCROLLER.with(|scroller| {
+        scroller.borrow_mut().jump_to(0.0);
+    });
+    s.set_history_viewport_y(0.0);
+    s.set_history_scroll_progress(0.0);
+    s.set_history_is_scrolling(false);
+
+    let (_, visible_h, _, _) = effective_tab_visible_h(s, 0);
     let (_, _) = sync_history_dimensions_and_window(s, visible_h, true);
     s.set_history_count(count);
 }
@@ -312,9 +372,8 @@ fn prepend_studio_history_record(rec: db::HistoryRecord, exe_path_ui: Option<Str
             });
             (slint::Image::default(), false)
         };
-        let a_scale = s.window().scale_factor().max(1.0);
-        let win_size = s.window().size();
-        let a_cpl = sotto_desktop::smooth_scroll::chars_per_line_for(win_size.width, a_scale);
+        let (phys_w, visible_h, a_scale, _) = effective_tab_visible_h(s, 0);
+        let a_cpl = sotto_desktop::smooth_scroll::chars_per_line_for(phys_w, a_scale);
         let inserted_h = sotto_desktop::smooth_scroll::estimate_card_height(&rec.transcript, a_cpl)
             + sotto_desktop::smooth_scroll::ROW_SPACING;
 
@@ -340,17 +399,7 @@ fn prepend_studio_history_record(rec: db::HistoryRecord, exe_path_ui: Option<Str
         });
 
         STUDIO_HISTORY_GEN.fetch_add(1, Ordering::SeqCst);
-        let view_h_prop = s.get_history_viewport_height();
-        let visible_h = if view_h_prop > 50.0 {
-            view_h_prop
-        } else {
-            sotto_desktop::smooth_scroll::compute_visible_height(
-                win_size.height as f32 / a_scale,
-                sotto_desktop::smooth_scroll::CHROME_RESERVED_PX,
-                sotto_desktop::smooth_scroll::MIN_VISIBLE_PX,
-            )
-        };
-        let (count, total_content_h) = recompute_studio_history_layout(win_size.width, a_scale);
+        let (count, total_content_h) = recompute_studio_history_layout(phys_w, a_scale);
         sotto_desktop::smooth_scroll::STUDIO_SCROLLER.with(|scroller| {
             let mut eng = scroller.borrow_mut();
             eng.set_dimensions(total_content_h, visible_h);
@@ -360,6 +409,7 @@ fn prepend_studio_history_record(rec: db::HistoryRecord, exe_path_ui: Option<Str
                 let snapped = (eng.current_y() * a_scale).round() / a_scale;
                 s.set_history_viewport_y(snapped);
             }
+            s.set_history_scroll_progress(eng.progress());
         });
         s.set_history_can_scroll(total_content_h > visible_h);
         s.set_history_content_height(total_content_h.max(visible_h));
@@ -397,21 +447,9 @@ fn wake_scroll_driver() {
 }
 
 fn sync_studio_dimensions(s: &StudioWindow, force_refill: bool) {
-    let win_size = s.window().size();
-    let scale = s.window().scale_factor().max(1.0);
-    let logical_h = win_size.height as f32 / scale;
-    let view_h_prop = s.get_history_viewport_height();
-    let visible_h = if view_h_prop > 50.0 {
-        view_h_prop
-    } else {
-        sotto_desktop::smooth_scroll::compute_visible_height(
-            logical_h,
-            sotto_desktop::smooth_scroll::CHROME_RESERVED_PX,
-            sotto_desktop::smooth_scroll::MIN_VISIBLE_PX,
-        )
-    };
-
     let active_tab = s.get_active_tab();
+    let (_, visible_h, _, _) = effective_tab_visible_h(s, active_tab);
+
     if active_tab == 0 {
         let _ = sync_history_dimensions_and_window(s, visible_h, force_refill);
     } else if active_tab == 1 {
@@ -436,7 +474,9 @@ fn sync_studio_dimensions(s: &StudioWindow, force_refill: bool) {
         }
     }
 
-    if sotto_desktop::smooth_scroll::any_studio_scroller_animating() {
+    if sotto_desktop::smooth_scroll::any_studio_scroller_animating()
+        || (force_refill && active_tab != 0)
+    {
         wake_scroll_driver();
     }
 }
@@ -1738,10 +1778,12 @@ fn wire_studio_window(
         }
     });
 
-    // Event-driven 60Hz subpixel smooth scroll driver: runs ONLY while a scroller is animating.
+    // Event-driven 60Hz subpixel smooth scroll driver: runs while animating, or until native subclass + real layout settle.
     let s_weak_scroll = s_weak.clone();
     let scroll_timer = slint::Timer::default();
     let mut cached_dim_key: (i32, u32, u32, u64) = (-1, 0, 0, 0);
+    let mut cached_prov_dim: (i32, i32) = (-1, -1);
+    let mut cached_custom_dim: (i32, i32) = (-1, -1);
     let mut last_tab: i32 = -1;
     let mut last_written_progress: f32 = -1.0;
     let mut last_written_providers_progress: f32 = -1.0;
@@ -1783,22 +1825,12 @@ fn wire_studio_window(
             if active_tab != last_tab {
                 last_tab = active_tab;
                 cached_dim_key = (-1, 0, 0, 0);
+                cached_prov_dim = (-1, -1);
+                cached_custom_dim = (-1, -1);
             }
 
             let win_size = s.window().size();
-            let scale = s.window().scale_factor().max(1.0);
-            let logical_h = win_size.height as f32 / scale;
-
-            let view_h_prop = s.get_history_viewport_height();
-            let visible_h = if view_h_prop > 50.0 {
-                view_h_prop
-            } else {
-                sotto_desktop::smooth_scroll::compute_visible_height(
-                    logical_h,
-                    sotto_desktop::smooth_scroll::CHROME_RESERVED_PX,
-                    sotto_desktop::smooth_scroll::MIN_VISIBLE_PX,
-                )
-            };
+            let (_, visible_h, scale, realized) = effective_tab_visible_h(&s, active_tab);
 
             if active_tab == 0 {
                 let count = s.get_history_count();
@@ -1813,7 +1845,6 @@ fn wire_studio_window(
                 sotto_desktop::smooth_scroll::STUDIO_SCROLLER.with(|scroller| {
                     let mut engine = scroller.borrow_mut();
                     if let Some(new_y) = engine.tick() {
-                        let scale = s.window().scale_factor().max(1.0);
                         let snapped_y = (new_y * scale).round() / scale;
                         s.set_history_viewport_y(snapped_y);
                         s.set_history_is_scrolling(true);
@@ -1836,9 +1867,15 @@ fn wire_studio_window(
             } else if active_tab == 1 {
                 let prov_content_h = s.get_providers_content_height();
                 let prov_visible_h = visible_h;
-                if prov_content_h > 0.0 {
+                let prov_dim_key = (prov_content_h.round() as i32, prov_visible_h.round() as i32);
+                if prov_content_h > 0.0 && prov_dim_key != cached_prov_dim {
+                    cached_prov_dim = prov_dim_key;
                     sotto_desktop::smooth_scroll::PROVIDERS_SCROLLER.with(|scroller| {
-                        scroller.borrow_mut().set_dimensions(prov_content_h, prov_visible_h);
+                        let mut eng = scroller.borrow_mut();
+                        eng.set_dimensions(prov_content_h, prov_visible_h);
+                        let progress = eng.progress();
+                        last_written_providers_progress = progress;
+                        s.set_providers_scroll_progress(progress);
                     });
                     let prov_can_scroll = prov_content_h > prov_visible_h;
                     if last_providers_can_scroll != Some(prov_can_scroll) {
@@ -1850,7 +1887,6 @@ fn wire_studio_window(
                 sotto_desktop::smooth_scroll::PROVIDERS_SCROLLER.with(|scroller| {
                     let mut engine = scroller.borrow_mut();
                     if let Some(new_y) = engine.tick() {
-                        let scale = s.window().scale_factor().max(1.0);
                         let snapped_y = (new_y * scale).round() / scale;
                         s.set_providers_viewport_y(snapped_y);
                         s.set_providers_is_scrolling(true);
@@ -1871,9 +1907,15 @@ fn wire_studio_window(
             } else if active_tab == 2 {
                 let custom_content_h = s.get_custom_content_height();
                 let custom_visible_h = visible_h;
-                if custom_content_h > 0.0 {
+                let custom_dim_key = (custom_content_h.round() as i32, custom_visible_h.round() as i32);
+                if custom_content_h > 0.0 && custom_dim_key != cached_custom_dim {
+                    cached_custom_dim = custom_dim_key;
                     sotto_desktop::smooth_scroll::CUSTOM_SCROLLER.with(|scroller| {
-                        scroller.borrow_mut().set_dimensions(custom_content_h, custom_visible_h);
+                        let mut eng = scroller.borrow_mut();
+                        eng.set_dimensions(custom_content_h, custom_visible_h);
+                        let progress = eng.progress();
+                        last_written_custom_progress = progress;
+                        s.set_custom_scroll_progress(progress);
                     });
                     let custom_can_scroll = custom_content_h > custom_visible_h;
                     if last_custom_can_scroll != Some(custom_can_scroll) {
@@ -1885,7 +1927,6 @@ fn wire_studio_window(
                 sotto_desktop::smooth_scroll::CUSTOM_SCROLLER.with(|scroller| {
                     let mut engine = scroller.borrow_mut();
                     if let Some(new_y) = engine.tick() {
-                        let scale = s.window().scale_factor().max(1.0);
                         let snapped_y = (new_y * scale).round() / scale;
                         s.set_custom_viewport_y(snapped_y);
                         s.set_custom_is_scrolling(true);
@@ -1905,7 +1946,12 @@ fn wire_studio_window(
                 });
             }
 
-            if !sotto_desktop::smooth_scroll::any_studio_scroller_animating() {
+            #[cfg(target_os = "windows")]
+            let ready_to_sleep = is_subclassed && realized;
+            #[cfg(not(target_os = "windows"))]
+            let ready_to_sleep = realized;
+
+            if ready_to_sleep && !sotto_desktop::smooth_scroll::any_studio_scroller_animating() {
                 STUDIO_SCROLL_TIMER.with(|t| {
                     if let Some(ref timer) = *t.borrow() {
                         timer.stop();
@@ -2340,6 +2386,7 @@ fn wire_studio_window(
                     let _ = cfg.save();
                 }
             }
+            wake_scroll_driver();
         }
         println!("[Providers] Active provider selected: {}", pid);
         let _ = std::io::stdout().flush();
@@ -2496,6 +2543,7 @@ fn wire_studio_window(
                 s.set_groq_key(primary.unwrap_or_default().into());
             }
             refresh_key_pool_ui(&s, &db, None);
+            wake_scroll_driver();
         }
         println!("[KeyPool] Added key to {}: {}", prov, router::mask_key(k));
     });
@@ -2527,6 +2575,7 @@ fn wire_studio_window(
                 s.set_groq_key(primary.unwrap_or_default().into());
             }
             refresh_key_pool_ui(&s, &db, None);
+            wake_scroll_driver();
         }
         println!("[KeyPool] Removed key from {}: {}", prov, router::mask_key(k));
     });
@@ -2578,6 +2627,7 @@ fn wire_studio_window(
             let _ = cfg.save();
             println!("[Language] Transcription language set to: {}", final_lang);
             let _ = std::io::stdout().flush();
+            wake_scroll_driver();
         }
     });
 
@@ -2586,6 +2636,7 @@ fn wire_studio_window(
         if let Some(s) = s_weak_lang_drop.upgrade() {
             let open = s.get_language_dropdown_open();
             s.set_language_dropdown_open(!open);
+            wake_scroll_driver();
         }
     });
 
@@ -2629,6 +2680,7 @@ fn wire_studio_window(
                     println!("[Language] Model '{}' is English-only. Reset language to English.", model_name);
                 }
             }
+            wake_scroll_driver();
         }
     });
 
@@ -2669,6 +2721,7 @@ fn wire_studio_window(
                 }
             }
             println!("[PostProcess LLM] Toggle changed to: {}", next);
+            wake_scroll_driver();
         }
     });
 
@@ -2887,6 +2940,7 @@ fn wire_studio_window(
             }
         }
         let _ = with_studio(|s| sync_studio_dimensions(s, true));
+        wake_scroll_driver();
         if tab == 2 {
             wake_pill_anim_timer();
         }
@@ -2958,9 +3012,6 @@ fn wire_studio_window(
     });
 
 // (Issue R10 on_history_drag_scroll unified at scroller init)
-
-    // Populate initial items from SQLite WAL database without blocking on icon lookups
-    hydrate_studio_history_nonblocking(studio, history_queue.db(), 500);
 }
 
 /// Lazy instantiates or toggles the Studio Window
@@ -3042,10 +3093,12 @@ fn toggle_studio_window(
                 #[cfg(not(target_os = "windows"))]
                 s.set_launch_on_startup(cfg.launch_on_startup);
             }
-            hydrate_studio_history_nonblocking(s, history_queue.db(), 500);
             s.set_purge_confirm_armed(false);
             let _ = s.show();
             bring_studio_to_front(s);
+            hydrate_studio_history_nonblocking(s, history_queue.db(), 500);
+            sync_studio_dimensions(s, true);
+            wake_scroll_driver();
             studio_visible.store(true, Ordering::SeqCst);
             wake_pill_anim_timer();
             println!("[Studio Action] Studio Suite shown & focused");

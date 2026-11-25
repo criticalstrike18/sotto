@@ -565,7 +565,9 @@ export component StudioWindow inherits Window {
     in-out property <float> history-scroll-progress: 0.0;
     in-out property <bool> history-is-scrolling: false;
     in-out property <bool> history-can-scroll: false;
-    out property <length> history-viewport-height: Math.max(100px, self.height - 132px);
+    out property <length> history-viewport-height: Math.max(100px, self.height - 156px);
+    out property <length> providers-viewport-height: Math.max(100px, self.height - 100px);
+    out property <length> custom-viewport-height: Math.max(100px, self.height - 100px);
 
     callback select-tab(int);
     callback copy-history-item(int, string);
@@ -751,25 +753,33 @@ export component StudioWindow inherits Window {
         HorizontalLayout {
             alignment: space-between;
 
-            // Brand Lockup (Dark Mode Full SVG Logo)
-            brand-logo := Rectangle {
-                width: 120px;
+            // Integrated Brand Lockup (transparent SVG waveform mark + Playfair Display wordmark)
+            brand-logo := HorizontalLayout {
                 height: 36px;
-                border-radius: Theme.radius-lg;
-                background: Theme.black;
-                border-width: 1px;
-                border-color: Theme.line;
-                clip: true;
+                spacing: Theme.space-8;
+                alignment: start;
                 accessible-role: text;
                 accessible-label: "Sotto";
 
-                Image {
-                    x: 1px;
-                    y: 1px;
-                    width: parent.width - 2px;
-                    height: parent.height - 2px;
-                    source: @image-url("../assets/icons/sotto-dark.svg");
-                    image-fit: contain;
+                VerticalLayout {
+                    alignment: center;
+                    Image {
+                        width: 28px;
+                        height: 28px;
+                        source: @image-url("../assets/icons/sotto-tray-dark.svg");
+                        colorize: Theme.ink-primary;
+                        image-fit: contain;
+                    }
+                }
+
+                Text {
+                    text: "Sotto";
+                    font-size: Theme.type-display.size;
+                    font-weight: Theme.type-display.weight;
+                    font-family: Theme.type-display.family;
+                    letter-spacing: -0.6px;
+                    color: Theme.ink-primary;
+                    vertical-alignment: center;
                 }
             }
 
@@ -2096,13 +2106,17 @@ export component StudioWindow inherits Window {
 
                     moved => {
                         if (self.pressed) {
-                            let norm_y = (self.mouse-y - 14px) / Math.max(1px, parent.height - 28px);
-                            root.providers-drag-scroll(Math.max(0.0, Math.min(1.0, norm_y)));
+                            let thumb-h = providers-scrollbar-thumb.height;
+                            let avail = parent.height - thumb-h;
+                            let norm_y = avail > 0px ? Math.min(1.0, Math.max(0.0, (self.mouse-y - thumb-h * 0.5) / avail)) : 0.0;
+                            root.providers-drag-scroll(norm_y);
                         }
                     }
                     clicked => {
-                        let norm_y = (self.mouse-y - 14px) / Math.max(1px, parent.height - 28px);
-                        root.providers-drag-scroll(Math.max(0.0, Math.min(1.0, norm_y)));
+                        let thumb-h = providers-scrollbar-thumb.height;
+                        let avail = parent.height - thumb-h;
+                        let norm_y = avail > 0px ? Math.min(1.0, Math.max(0.0, (self.mouse-y - thumb-h * 0.5) / avail)) : 0.0;
+                        root.providers-drag-scroll(norm_y);
                     }
                 }
             }
@@ -3933,13 +3947,17 @@ export component StudioWindow inherits Window {
 
                     moved => {
                         if (self.pressed) {
-                            let norm_y = (self.mouse-y - 14px) / Math.max(1px, parent.height - 28px);
-                            root.custom-drag-scroll(Math.max(0.0, Math.min(1.0, norm_y)));
+                            let thumb-h = thumb.height;
+                            let avail = parent.height - thumb-h;
+                            let norm_y = avail > 0px ? Math.min(1.0, Math.max(0.0, (self.mouse-y - thumb-h * 0.5) / avail)) : 0.0;
+                            root.custom-drag-scroll(norm_y);
                         }
                     }
                     clicked => {
-                        let norm_y = (self.mouse-y - 14px) / Math.max(1px, parent.height - 28px);
-                        root.custom-drag-scroll(Math.max(0.0, Math.min(1.0, norm_y)));
+                        let thumb-h = thumb.height;
+                        let avail = parent.height - thumb-h;
+                        let norm_y = avail > 0px ? Math.min(1.0, Math.max(0.0, (self.mouse-y - thumb-h * 0.5) / avail)) : 0.0;
+                        root.custom-drag-scroll(norm_y);
                     }
                 }
             }
