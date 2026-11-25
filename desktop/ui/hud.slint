@@ -550,6 +550,7 @@ export component StudioWindow inherits Window {
     in-out property <int> active-tab: 0; // 0 = Dictations, 1 = Providers, 2 = Customization
     in-out property <[HistoryItem]> history-items: [];
     in-out property <[HistoryItem]> visible-history-items: [];
+    in-out property <bool> history-virtualized: false;
     callback history-drag-scroll(float);
     in-out property <length> top-spacer-height: 0px;
     in-out property <length> bottom-spacer-height: 0px;
@@ -563,38 +564,6 @@ export component StudioWindow inherits Window {
     in-out property <bool> history-is-scrolling: false;
     in-out property <bool> history-can-scroll: false;
     out property <length> history-viewport-height: Math.max(100px, self.height - 132px);
-
-    // Hidden measure zone: same cards, same width, parked offscreen so Rust
-    // can read their TRUE laid-out total instead of estimating it. Auto
-    // height = exact content sum (the Window's explicit preferred size is
-    // unaffected by offscreen content; runtime sizes override anyway).
-    out property <length> measure-total-h: measure-col.height;
-
-    measure-zone := Rectangle {
-        x: -5000px;
-        y: 0px;
-        width: history-container.width;
-        clip: false;
-
-        measure-col := VerticalLayout {
-            spacing: Theme.space-8;
-
-            for entry in root.history-items : HistoryCard {
-                rec-id: entry.id;
-                rec-timestamp: entry.timestamp-str;
-                rec-transcript: entry.transcript;
-                rec-duration-ms: entry.duration-ms;
-                rec-duration-str: entry.duration-str;
-                rec-target-app: entry.target-app;
-                rec-app-icon: entry.app-icon;
-                rec-has-icon: entry.has-icon;
-                copied-id: root.copied-item-id;
-                copy-item(id, text) => {
-                    root.copy-history-item(id, text);
-                }
-            }
-        }
-    }
 
     callback select-tab(int);
     callback copy-history-item(int, string);
@@ -682,6 +651,10 @@ export component StudioWindow inherits Window {
     // Tab 1 smooth scrolling
     in-out property <length> providers-viewport-y: 0px;
     in-out property <length> providers-content-height: providers_content_layout.preferred-height;
+    in-out property <float> providers-scroll-progress: 0.0;
+    in-out property <bool> providers-is-scrolling: false;
+    in-out property <bool> providers-can-scroll: false;
+    callback providers-drag-scroll(float);
 
     in-out property <int> active-state: 0;
     in-out property <int> opt-idle: 0;
@@ -945,7 +918,12 @@ export component StudioWindow inherits Window {
                         padding-bottom: Theme.space-16;
                         spacing: Theme.space-8;
 
-                        for entry in root.history-items : HistoryCard {
+                        if root.history-virtualized && root.top-spacer-height > 0px : Rectangle {
+                            height: root.top-spacer-height;
+                            background: transparent;
+                        }
+
+                        for entry in (root.history-virtualized ? root.visible-history-items : root.history-items) : HistoryCard {
                             rec-id: entry.id;
                             rec-timestamp: entry.timestamp-str;
                             rec-transcript: entry.transcript;
@@ -960,6 +938,10 @@ export component StudioWindow inherits Window {
                             }
                         }
 
+                        if root.history-virtualized && root.bottom-spacer-height > 0px : Rectangle {
+                            height: root.bottom-spacer-height;
+                            background: transparent;
+                        }
                     }
                 }
 
@@ -2052,6 +2034,65 @@ export component StudioWindow inherits Window {
                         font-size: Theme.type-label.size;
                         color: root.provider-status-ok ? Theme.success : Theme.error-soft;
                         wrap: word-wrap;
+                    }
+                }
+            }
+
+            // Top Vignette Edge Shadow
+            Rectangle {
+                y: 0px;
+                x: 0px;
+                width: parent.width;
+                height: 18px;
+                background: @linear-gradient(180deg, Theme.vignette 0%, transparent 100%);
+                opacity: (root.providers-scroll-progress > 0.01) ? 1.0 : 0.0;
+                animate opacity { duration: 180ms; easing: ease-out; }
+            }
+
+            // Bottom Vignette Edge Shadow
+            Rectangle {
+                y: parent.height - 18px;
+                x: 0px;
+                width: parent.width;
+                height: 18px;
+                background: @linear-gradient(0deg, Theme.vignette 0%, transparent 100%);
+                opacity: (root.providers-can-scroll && root.providers-scroll-progress < 0.99) ? 1.0 : 0.0;
+                animate opacity { duration: 180ms; easing: ease-out; }
+            }
+
+            // Modern Glass Scrollbar Indicator (Syncs with Lenis Physics + Drag)
+            if (root.providers-can-scroll) : providers-scrollbar-track := Rectangle {
+                x: parent.width - 6px;
+                y: 4px;
+                width: 4px;
+                height: parent.height - 8px;
+                background: transparent;
+
+                providers-scrollbar-thumb := Rectangle {
+                    width: 4px;
+                    height: Math.max(28px, (parent.height) * (parent.height / Math.max(1px, root.providers-content-height)));
+                    y: root.providers-scroll-progress * (parent.height - self.height);
+                    border-radius: Theme.radius-pill;
+                    background: root.providers-is-scrolling ? Theme.ink-muted : Theme.line-strong;
+                    opacity: root.providers-is-scrolling ? 0.9 : 0.4;
+                    animate opacity { duration: 200ms; }
+                    animate background { duration: 200ms; }
+                }
+
+                providers-track-touch := TouchArea {
+                    width: 24px;
+                    x: -10px;
+                    height: parent.height;
+
+                    moved => {
+                        if (self.pressed) {
+                            let norm_y = (self.mouse-y - 14px) / Math.max(1px, parent.height - 28px);
+                            root.providers-drag-scroll(Math.max(0.0, Math.min(1.0, norm_y)));
+                        }
+                    }
+                    clicked => {
+                        let norm_y = (self.mouse-y - 14px) / Math.max(1px, parent.height - 28px);
+                        root.providers-drag-scroll(Math.max(0.0, Math.min(1.0, norm_y)));
                     }
                 }
             }

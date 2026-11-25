@@ -1,9 +1,11 @@
 // Copyright (c) 2026 Sotto
 // Application Name Formatting & Win32 Executable Icon Extraction Cache
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::path::Path;
 use std::sync::Mutex;
+
+pub const MAX_ICON_CACHE_ENTRIES: usize = 128;
 
 /// Strips `.exe` and maps raw executable names to human-readable sentence/title case brand names
 pub fn format_app_name(raw: &str) -> String {
@@ -99,48 +101,81 @@ pub struct RawIconData {
     pub rgba: Vec<u8>,
 }
 
-// In-memory icon cache storing thread-safe raw pixel data
-static ICON_CACHE: Mutex<Option<HashMap<String, Option<RawIconData>>>> = Mutex::new(None);
+struct IconCacheStore {
+    map: HashMap<String, Option<RawIconData>>,
+    order: VecDeque<String>,
+}
 
-/// Retrieves cached icon for application, or attempts extraction if path is provided.
-/// Constructs the `slint::Image` on the calling (UI) thread.
-pub fn get_app_icon(app_name: &str, exe_path: Option<&str>) -> (slint::Image, bool) {
-    let clean_name = format_app_name(app_name);
-    let mut guard = ICON_CACHE.lock().unwrap();
-    let cache = guard.get_or_insert_with(HashMap::new);
-
-    let clean_key = clean_name.to_lowercase();
-    let raw_key = app_name.trim().to_lowercase();
-
-    // Check cache by clean formatted name or raw executable name
-    if let Some(cached) = cache.get(&clean_key).or_else(|| cache.get(&raw_key)) {
-        if let Some(raw) = cached {
-            let mut pixel_buf = slint::SharedPixelBuffer::<slint::Rgba8Pixel>::new(raw.width, raw.height);
-            pixel_buf.make_mut_bytes().copy_from_slice(&raw.rgba);
-            return (slint::Image::from_rgba8(pixel_buf), true);
-        } else {
-            return (slint::Image::default(), false);
+impl IconCacheStore {
+    fn new() -> Self {
+        Self {
+            map: HashMap::new(),
+            order: VecDeque::new(),
         }
     }
 
-    // Try multiple avenues to resolve the full executable path:
-    let resolved_path = if let Some(path) = exe_path {
-        if Path::new(path).exists() {
-            Some(path.to_string())
-        } else {
-            None
-        }
-    } else {
-        None
-    };
+    fn get(&self, clean_key: &str, raw_key: &str) -> Option<&Option<RawIconData>> {
+        self.map.get(clean_key).or_else(|| self.map.get(raw_key))
+    }
 
-    let resolved_path = resolved_path
-        .or_else(|| find_common_app_path(&clean_name))
+    fn insert_bounded(&mut self, key: String, val: Option<RawIconData>) {
+        if !self.map.contains_key(&key) {
+            while self.order.len() >= MAX_ICON_CACHE_ENTRIES {
+                if let Some(evicted) = self.order.pop_front() {
+                    self.map.remove(&evicted);
+                } else {
+                    break;
+                }
+            }
+            self.order.push_back(key.clone());
+        }
+        self.map.insert(key, val);
+    }
+}
+
+// Bounded in-memory icon cache storing thread-safe raw pixel data.
+static ICON_CACHE: Mutex<Option<IconCacheStore>> = Mutex::new(None);
+
+thread_local! {
+    static UI_IMAGE_CACHE: std::cell::RefCell<HashMap<String, slint::Image>> =
+        std::cell::RefCell::new(HashMap::new());
+}
+
+/// Drops cached `slint::Image` texture handles owned by the calling UI thread.
+pub fn clear_ui_icon_cache() {
+    UI_IMAGE_CACHE.with(|c| c.borrow_mut().clear());
+}
+
+fn shared_ui_image(clean_key: &str, raw_opt: Option<&RawIconData>) -> (slint::Image, bool) {
+    let Some(raw) = raw_opt else {
+        return (slint::Image::default(), false);
+    };
+    UI_IMAGE_CACHE.with(|cell| {
+        let mut cache = cell.borrow_mut();
+        if let Some(img) = cache.get(clean_key) {
+            return (img.clone(), true);
+        }
+        let mut pixel_buf = slint::SharedPixelBuffer::<slint::Rgba8Pixel>::new(raw.width, raw.height);
+        pixel_buf.make_mut_bytes().copy_from_slice(&raw.rgba);
+        let img = slint::Image::from_rgba8(pixel_buf);
+        if cache.len() >= MAX_ICON_CACHE_ENTRIES {
+            cache.clear();
+        }
+        cache.insert(clean_key.to_string(), img.clone());
+        (img, true)
+    })
+}
+
+fn resolve_icon_uncached(clean_name: &str, app_name: &str, exe_path: Option<&str>) -> Option<RawIconData> {
+    let resolved_path = exe_path
+        .filter(|path| Path::new(path).exists())
+        .map(|s| s.to_string())
+        .or_else(|| find_common_app_path(clean_name))
         .or_else(|| find_common_app_path(app_name))
         .or_else(|| {
             #[cfg(target_os = "windows")]
             {
-                find_running_process_exe(&clean_name)
+                find_running_process_exe(clean_name)
                     .or_else(|| find_running_process_exe(app_name))
             }
             #[cfg(not(target_os = "windows"))]
@@ -149,22 +184,79 @@ pub fn get_app_icon(app_name: &str, exe_path: Option<&str>) -> (slint::Image, bo
             }
         });
 
-    let extracted = if let Some(ref path) = resolved_path {
-        extract_icon_from_exe(path)
-    } else {
-        None
+    resolved_path.and_then(|path| extract_icon_from_exe(&path))
+}
+
+/// Non-blocking cache lookup for the UI thread. Never hits disk, process snapshots, or GDI.
+/// Returns `Some((image, has_icon))` if cached (including negative cache), or `None` if uncached.
+pub fn try_get_cached_app_icon(app_name: &str) -> Option<(slint::Image, bool)> {
+    let clean_name = format_app_name(app_name);
+    let clean_key = clean_name.to_lowercase();
+    let raw_key = app_name.trim().to_lowercase();
+
+    let raw_opt = {
+        let guard = ICON_CACHE.lock().unwrap();
+        let store = guard.as_ref()?;
+        store.get(&clean_key, &raw_key)?.clone()
     };
 
-    cache.insert(clean_key, extracted.clone());
-    cache.insert(raw_key, extracted.clone());
+    Some(shared_ui_image(&clean_key, raw_opt.as_ref()))
+}
 
-    if let Some(raw) = extracted {
-        let mut pixel_buf = slint::SharedPixelBuffer::<slint::Rgba8Pixel>::new(raw.width, raw.height);
-        pixel_buf.make_mut_bytes().copy_from_slice(&raw.rgba);
-        (slint::Image::from_rgba8(pixel_buf), true)
-    } else {
-        (slint::Image::default(), false)
+/// Populates `ICON_CACHE` off the UI thread without allocating a `slint::Image`.
+/// Returns `true` if a non-empty icon is present after resolution.
+pub fn prewarm_app_icon(app_name: &str, exe_path: Option<&str>) -> bool {
+    let clean_name = format_app_name(app_name);
+    let clean_key = clean_name.to_lowercase();
+    let raw_key = app_name.trim().to_lowercase();
+
+    {
+        let guard = ICON_CACHE.lock().unwrap();
+        if let Some(store) = guard.as_ref() {
+            if let Some(cached) = store.get(&clean_key, &raw_key) {
+                return cached.is_some();
+            }
+        }
     }
+
+    let extracted = resolve_icon_uncached(&clean_name, app_name, exe_path);
+    let found = extracted.is_some();
+
+    let mut guard = ICON_CACHE.lock().unwrap();
+    let store = guard.get_or_insert_with(IconCacheStore::new);
+    store.insert_bounded(clean_key, extracted.clone());
+    if !raw_key.is_empty() {
+        store.insert_bounded(raw_key, extracted);
+    }
+    found
+}
+
+/// Retrieves cached icon for application, or attempts extraction if path is provided.
+/// Constructs (and reuses per-app) `slint::Image` on the calling thread.
+pub fn get_app_icon(app_name: &str, exe_path: Option<&str>) -> (slint::Image, bool) {
+    let clean_name = format_app_name(app_name);
+    let clean_key = clean_name.to_lowercase();
+    let raw_key = app_name.trim().to_lowercase();
+
+    {
+        let guard = ICON_CACHE.lock().unwrap();
+        if let Some(store) = guard.as_ref() {
+            if let Some(cached) = store.get(&clean_key, &raw_key) {
+                return shared_ui_image(&clean_key, cached.as_ref());
+            }
+        }
+    }
+
+    let extracted = resolve_icon_uncached(&clean_name, app_name, exe_path);
+
+    let mut guard = ICON_CACHE.lock().unwrap();
+    let store = guard.get_or_insert_with(IconCacheStore::new);
+    store.insert_bounded(clean_key.clone(), extracted.clone());
+    if !raw_key.is_empty() {
+        store.insert_bounded(raw_key, extracted.clone());
+    }
+
+    shared_ui_image(&clean_key, extracted.as_ref())
 }
 
 fn find_common_app_path(formatted_name: &str) -> Option<String> {
@@ -436,6 +528,26 @@ mod tests {
         assert_eq!(format_app_name("slack.exe"), "Slack");
         assert_eq!(format_app_name("Desktop"), "Desktop");
         assert_eq!(format_app_name("custom_app.exe"), "Custom App");
+    }
+
+    #[test]
+    fn test_try_get_cached_app_icon_is_miss_until_prewarmed_and_bounded() {
+        let unique_name = "sotto_uncached_probe_app_xyz.exe";
+        assert!(try_get_cached_app_icon(unique_name).is_none());
+        let found = prewarm_app_icon(unique_name, None);
+        assert!(!found);
+        // After prewarm, cache returns negative hit without re-probing.
+        let cached = try_get_cached_app_icon(unique_name).expect("negative cache must exist");
+        assert!(!cached.1);
+
+        // Verify bound limit holds even when inserting more than MAX_ICON_CACHE_ENTRIES.
+        for i in 0..(MAX_ICON_CACHE_ENTRIES + 25) {
+            prewarm_app_icon(&format!("sotto_bound_app_{i}.exe"), None);
+        }
+        let guard = ICON_CACHE.lock().unwrap();
+        let store = guard.as_ref().unwrap();
+        assert!(store.map.len() <= MAX_ICON_CACHE_ENTRIES);
+        assert!(store.order.len() <= MAX_ICON_CACHE_ENTRIES);
     }
 
     #[test]

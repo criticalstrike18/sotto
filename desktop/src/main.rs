@@ -45,6 +45,332 @@ const IPC_ADDR: &str = "127.0.0.1:49281";
 thread_local! {
     static STUDIO_INSTANCE: RefCell<Option<StudioWindow>> = const { RefCell::new(None) };
     static STUDIO_SCROLL_TIMER: RefCell<Option<slint::Timer>> = const { RefCell::new(None) };
+    static STUDIO_ANIM_TIMER: RefCell<Option<slint::Timer>> = const { RefCell::new(None) };
+    static STUDIO_HISTORY_CACHE: RefCell<Vec<HistoryItem>> = const { RefCell::new(Vec::new()) };
+    static STUDIO_HISTORY_LAYOUT: RefCell<sotto_desktop::smooth_scroll::HistoryLayout> =
+        RefCell::new(sotto_desktop::smooth_scroll::HistoryLayout::default());
+    static STUDIO_CACHED_WINDOW: RefCell<Option<(sotto_desktop::smooth_scroll::VirtualWindow, f32, Instant)>> =
+        const { RefCell::new(None) };
+}
+
+static ACTIVE_OPT_IDLE: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
+
+fn wake_pill_anim_timer() {
+    STUDIO_ANIM_TIMER.with(|t| {
+        if let Some(ref timer) = *t.borrow() {
+            if !timer.running() {
+                timer.restart();
+            }
+        }
+    });
+}
+
+fn should_anim_timer_run(
+    engine_state: u8,
+    opt_idle: i32,
+    studio_visible: bool,
+    studio_tab: i32,
+    studio_preview_state: i32,
+    was_listening: bool,
+    last_studio_preview_state: i32,
+) -> bool {
+    if engine_state != 0 || opt_idle != 0 || was_listening {
+        return true;
+    }
+    studio_visible
+        && studio_tab == 2
+        && (studio_preview_state == 1 || last_studio_preview_state != studio_preview_state)
+}
+
+/// Drops the Studio window and all UI-thread history/icon caches so closing frees RAM.
+fn drop_studio_instance(studio_visible: &Arc<AtomicBool>) {
+    STUDIO_SCROLL_TIMER.with(|t| {
+        if let Some(ref timer) = *t.borrow() {
+            timer.stop();
+        }
+        *t.borrow_mut() = None;
+    });
+    STUDIO_HISTORY_CACHE.with(|c| {
+        let mut items = c.borrow_mut();
+        items.clear();
+        items.shrink_to_fit();
+    });
+    STUDIO_HISTORY_LAYOUT.with(|l| *l.borrow_mut() = Default::default());
+    STUDIO_CACHED_WINDOW.with(|w| *w.borrow_mut() = None);
+    app_icon::clear_ui_icon_cache();
+    STUDIO_INSTANCE.with(|cell| {
+        if let Some(s) = cell.borrow_mut().take() {
+            let _ = s.hide();
+            drop(s);
+        }
+    });
+    studio_visible.store(false, Ordering::SeqCst);
+    trim_working_set();
+}
+
+fn patch_studio_icons_from_cache() {
+    with_studio(|s| {
+        let changed = STUDIO_HISTORY_CACHE.with(|cache| {
+            let mut items = cache.borrow_mut();
+            let mut any = false;
+            for item in items.iter_mut() {
+                if !item.has_icon {
+                    if let Some((icon, true)) = app_icon::try_get_cached_app_icon(item.target_app.as_str()) {
+                        item.app_icon = icon;
+                        item.has_icon = true;
+                        any = true;
+                    }
+                }
+            }
+            any
+        });
+        if changed {
+            let view_h = s.get_history_viewport_height().max(sotto_desktop::smooth_scroll::MIN_VISIBLE_PX);
+            sync_history_virtual_window(s, view_h, true);
+        }
+    });
+}
+
+/// Populates Studio history instantaneously from SQLite without blocking the UI thread
+/// on uncached Win32 icon/process lookups; resolves missing icons in a background batch.
+fn hydrate_studio_history_nonblocking(s: &StudioWindow, db: &db::HistoryDb, limit: usize) {
+    let recent = db.get_recent(limit).unwrap_or_default();
+    let mut missing: std::collections::HashMap<String, Option<String>> = std::collections::HashMap::new();
+    let items: Vec<HistoryItem> = recent
+        .into_iter()
+        .map(|r| {
+            let formatted = app_icon::format_app_name(&r.target_app);
+            let (icon, has_icon) = if formatted.eq_ignore_ascii_case("Desktop") {
+                (slint::Image::default(), false)
+            } else if let Some(hit) = app_icon::try_get_cached_app_icon(&formatted) {
+                hit
+            } else {
+                missing
+                    .entry(formatted.clone())
+                    .or_insert_with(|| Some(r.target_app.clone()));
+                (slint::Image::default(), false)
+            };
+            HistoryItem {
+                id: r.id as i32,
+                timestamp_str: r.timestamp_str.into(),
+                transcript: r.transcript.into(),
+                duration_ms: r.duration_ms,
+                duration_str: r.duration_str.into(),
+                target_app: formatted.into(),
+                app_icon: icon,
+                has_icon,
+            }
+        })
+        .collect();
+
+    set_studio_history_list(s, items);
+
+    if !missing.is_empty() {
+        std::thread::spawn(move || {
+            let mut any_found = false;
+            for (formatted, raw) in missing {
+                if app_icon::prewarm_app_icon(&formatted, raw.as_deref()) {
+                    any_found = true;
+                }
+            }
+            if any_found {
+                let _ = slint::invoke_from_event_loop(patch_studio_icons_from_cache);
+            }
+        });
+    }
+}
+
+fn recompute_studio_history_layout(win_w: u32, scale: f32) -> (i32, f32) {
+    let cpl = sotto_desktop::smooth_scroll::chars_per_line_for(win_w, scale);
+    STUDIO_HISTORY_CACHE.with(|cache| {
+        let items = cache.borrow();
+        let layout = sotto_desktop::smooth_scroll::compute_history_layout(
+            items.iter().map(|it| it.transcript.as_str()),
+            cpl,
+        );
+        let total_h = layout.total_content_h;
+        let count = items.len() as i32;
+        STUDIO_HISTORY_LAYOUT.with(|l| *l.borrow_mut() = layout);
+        (count, total_h)
+    })
+}
+
+fn sync_history_virtual_window(s: &StudioWindow, visible_h: f32, force_refill: bool) {
+    let scroll_offset_y = sotto_desktop::smooth_scroll::STUDIO_SCROLLER
+        .with(|sc| (-sc.borrow().current_y()).max(0.0));
+    let now = Instant::now();
+
+    let (win_opt, n) = STUDIO_HISTORY_LAYOUT.with(|l| {
+        let layout = l.borrow();
+        let n = layout.heights.len();
+        if n == 0 {
+            return (None, 0);
+        }
+        let win = sotto_desktop::smooth_scroll::compute_virtual_window(
+            &layout,
+            scroll_offset_y,
+            visible_h,
+            sotto_desktop::smooth_scroll::VIRTUAL_CUSHION_PX,
+        );
+        (win, n)
+    });
+
+    let Some(win) = win_opt else {
+        let empty_vis: Rc<VecModel<HistoryItem>> = Rc::new(VecModel::default());
+        s.set_visible_history_items(ModelRc::from(empty_vis));
+        s.set_top_spacer_height(0.0);
+        s.set_bottom_spacer_height(0.0);
+        STUDIO_CACHED_WINDOW.with(|cw| *cw.borrow_mut() = None);
+        return;
+    };
+
+    let needs_refill = if force_refill {
+        true
+    } else {
+        let cached = STUDIO_CACHED_WINDOW.with(|cw| *cw.borrow());
+        STUDIO_HISTORY_LAYOUT.with(|l| {
+            sotto_desktop::smooth_scroll::should_refill_virtual_window(
+                &l.borrow(),
+                cached,
+                win,
+                scroll_offset_y,
+                visible_h,
+                now,
+            )
+        })
+    };
+
+    if needs_refill {
+        let slice: Vec<HistoryItem> = STUDIO_HISTORY_CACHE.with(|cache| {
+            let items = cache.borrow();
+            let end = (win.last_idx + 1).min(items.len());
+            let start = win.first_idx.min(end);
+            items[start..end].to_vec()
+        });
+        s.set_top_spacer_height(win.top_spacer);
+        s.set_bottom_spacer_height(win.bottom_spacer);
+        s.set_visible_history_items(ModelRc::from(Rc::new(VecModel::from(slice))));
+        STUDIO_CACHED_WINDOW.with(|cw| *cw.borrow_mut() = Some((win, scroll_offset_y, now)));
+    }
+    let _ = n;
+}
+
+fn sync_history_dimensions_and_window(s: &StudioWindow, visible_h: f32, force_refill: bool) -> (i32, f32) {
+    let win_size = s.window().size();
+    let scale = s.window().scale_factor().max(1.0);
+    let (count, total_content_h) = recompute_studio_history_layout(win_size.width, scale);
+    sotto_desktop::smooth_scroll::STUDIO_SCROLLER.with(|scroller| {
+        scroller.borrow_mut().set_dimensions(total_content_h, visible_h);
+    });
+    let can_scroll = total_content_h > visible_h;
+    s.set_history_count(count);
+    s.set_history_can_scroll(can_scroll);
+    s.set_history_content_height(total_content_h.max(visible_h));
+    sync_history_virtual_window(s, visible_h, force_refill);
+    (count, total_content_h)
+}
+
+fn set_studio_history_list(s: &StudioWindow, items: Vec<HistoryItem>) {
+    s.set_history_virtualized(true);
+    let count = items.len() as i32;
+    STUDIO_HISTORY_CACHE.with(|cache| *cache.borrow_mut() = items);
+    STUDIO_CACHED_WINDOW.with(|cw| *cw.borrow_mut() = None);
+    let empty_full: Rc<VecModel<HistoryItem>> = Rc::new(VecModel::default());
+    s.set_history_items(ModelRc::from(empty_full));
+    STUDIO_HISTORY_GEN.fetch_add(1, Ordering::SeqCst);
+
+    let view_h_prop = s.get_history_viewport_height();
+    let visible_h = if view_h_prop > 50.0 {
+        view_h_prop
+    } else {
+        let win_size = s.window().size();
+        let scale = s.window().scale_factor().max(1.0);
+        sotto_desktop::smooth_scroll::compute_visible_height(
+            win_size.height as f32 / scale,
+            sotto_desktop::smooth_scroll::CHROME_RESERVED_PX,
+            sotto_desktop::smooth_scroll::MIN_VISIBLE_PX,
+        )
+    };
+    let (_, _) = sync_history_dimensions_and_window(s, visible_h, true);
+    s.set_history_count(count);
+}
+
+fn prepend_studio_history_record(rec: db::HistoryRecord, exe_path_ui: Option<String>, source_label: &str) {
+    with_studio(|s| {
+        let formatted = app_icon::format_app_name(&rec.target_app);
+        let (icon, has_icon) = if formatted.eq_ignore_ascii_case("Desktop") {
+            (slint::Image::default(), false)
+        } else if let Some(hit) = app_icon::try_get_cached_app_icon(&formatted) {
+            hit
+        } else {
+            let formatted_bg = formatted.clone();
+            let raw_bg = exe_path_ui.clone();
+            std::thread::spawn(move || {
+                if app_icon::prewarm_app_icon(&formatted_bg, raw_bg.as_deref()) {
+                    let _ = slint::invoke_from_event_loop(patch_studio_icons_from_cache);
+                }
+            });
+            (slint::Image::default(), false)
+        };
+        let a_scale = s.window().scale_factor().max(1.0);
+        let win_size = s.window().size();
+        let a_cpl = sotto_desktop::smooth_scroll::chars_per_line_for(win_size.width, a_scale);
+        let inserted_h = sotto_desktop::smooth_scroll::estimate_card_height(&rec.transcript, a_cpl)
+            + sotto_desktop::smooth_scroll::ROW_SPACING;
+
+        let new_count = STUDIO_HISTORY_CACHE.with(|cache| {
+            let mut items = cache.borrow_mut();
+            items.insert(
+                0,
+                HistoryItem {
+                    id: rec.id as i32,
+                    timestamp_str: rec.timestamp_str.into(),
+                    transcript: rec.transcript.into(),
+                    duration_ms: rec.duration_ms,
+                    duration_str: rec.duration_str.into(),
+                    target_app: formatted.into(),
+                    app_icon: icon,
+                    has_icon,
+                },
+            );
+            if items.len() > 500 {
+                items.truncate(500);
+            }
+            items.len() as i32
+        });
+
+        STUDIO_HISTORY_GEN.fetch_add(1, Ordering::SeqCst);
+        let view_h_prop = s.get_history_viewport_height();
+        let visible_h = if view_h_prop > 50.0 {
+            view_h_prop
+        } else {
+            sotto_desktop::smooth_scroll::compute_visible_height(
+                win_size.height as f32 / a_scale,
+                sotto_desktop::smooth_scroll::CHROME_RESERVED_PX,
+                sotto_desktop::smooth_scroll::MIN_VISIBLE_PX,
+            )
+        };
+        let (count, total_content_h) = recompute_studio_history_layout(win_size.width, a_scale);
+        sotto_desktop::smooth_scroll::STUDIO_SCROLLER.with(|scroller| {
+            let mut eng = scroller.borrow_mut();
+            eng.set_dimensions(total_content_h, visible_h);
+            // Anchor scrolling (Fix R8): keep reading position steady when prepending at index 0.
+            if eng.current_y() < -15.0 {
+                eng.shift_anchor(-inserted_h);
+                let snapped = (eng.current_y() * a_scale).round() / a_scale;
+                s.set_history_viewport_y(snapped);
+            }
+        });
+        s.set_history_can_scroll(total_content_h > visible_h);
+        s.set_history_content_height(total_content_h.max(visible_h));
+        s.set_history_count(count);
+        sync_history_virtual_window(s, visible_h, true);
+        println!(
+            "[Studio History] Inserted {} transcription #{} into live Studio list (total: {})",
+            source_label, rec.id, new_count
+        );
+        let _ = std::io::stdout().flush();
+    });
 }
 
 
@@ -60,38 +386,100 @@ static IS_RECORDING_KEY: std::sync::atomic::AtomicBool = std::sync::atomic::Atom
 static RECORD_TARGET: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
 pub static PENDING_MOD_KEY: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
+fn wake_scroll_driver() {
+    STUDIO_SCROLL_TIMER.with(|t| {
+        if let Some(ref timer) = *t.borrow() {
+            if !timer.running() {
+                timer.restart();
+            }
+        }
+    });
+}
+
+fn sync_studio_dimensions(s: &StudioWindow, force_refill: bool) {
+    let win_size = s.window().size();
+    let scale = s.window().scale_factor().max(1.0);
+    let logical_h = win_size.height as f32 / scale;
+    let view_h_prop = s.get_history_viewport_height();
+    let visible_h = if view_h_prop > 50.0 {
+        view_h_prop
+    } else {
+        sotto_desktop::smooth_scroll::compute_visible_height(
+            logical_h,
+            sotto_desktop::smooth_scroll::CHROME_RESERVED_PX,
+            sotto_desktop::smooth_scroll::MIN_VISIBLE_PX,
+        )
+    };
+
+    let active_tab = s.get_active_tab();
+    if active_tab == 0 {
+        let _ = sync_history_dimensions_and_window(s, visible_h, force_refill);
+    } else if active_tab == 1 {
+        let prov_content_h = s.get_providers_content_height();
+        if prov_content_h > 0.0 {
+            sotto_desktop::smooth_scroll::PROVIDERS_SCROLLER.with(|scroller| {
+                let mut eng = scroller.borrow_mut();
+                eng.set_dimensions(prov_content_h, visible_h);
+                s.set_providers_can_scroll(prov_content_h > visible_h);
+                s.set_providers_scroll_progress(eng.progress());
+            });
+        }
+    } else if active_tab == 2 {
+        let custom_content_h = s.get_custom_content_height();
+        if custom_content_h > 0.0 {
+            sotto_desktop::smooth_scroll::CUSTOM_SCROLLER.with(|scroller| {
+                let mut eng = scroller.borrow_mut();
+                eng.set_dimensions(custom_content_h, visible_h);
+                s.set_custom_can_scroll(custom_content_h > visible_h);
+                s.set_custom_scroll_progress(eng.progress());
+            });
+        }
+    }
+
+    if sotto_desktop::smooth_scroll::any_studio_scroller_animating() {
+        wake_scroll_driver();
+    }
+}
+
+/// Validates and extracts `(pt_x, pt_y, is_begin)` from Win32 `WM_GESTURE` (`GID_PAN`).
+#[allow(dead_code)]
+fn decode_gesture_pan_point(dw_id: u32, pts_x: i16, pts_y: i16, dw_flags: u32, expected_gid_pan: u32) -> Option<(i32, i32, bool)> {
+    const GF_BEGIN: u32 = 0x0000_0001;
+    if dw_id != expected_gid_pan {
+        return None;
+    }
+    Some((pts_x as i32, pts_y as i32, (dw_flags & GF_BEGIN) != 0))
+}
+
 /// Handles WM_GESTURE pan for touchscreen scrolling (R10). Feeds the same
 /// engine target as wheel/keyboard, so all inputs share one driver.
-/// Returns true when the gesture was consumed. Defensive by design: any
-/// failure or non-pan gesture returns false and the message falls through to
-/// the original WndProc untouched.
+/// Returns true when the gesture was consumed.
 #[cfg(target_os = "windows")]
-#[allow(dead_code)]
-fn handle_touch_pan_gesture(wparam: usize, _lparam: isize, active_tab: i32) -> bool {
+fn handle_touch_pan_gesture(wparam: usize, lparam: isize, active_tab: i32, dpi_scale: f32) -> bool {
     use windows_sys::Win32::UI::Input::Touch::*;
-    // Gesture-flag constants (Win32 ABI; not exported by windows-sys 0.59).
-    const GF_BEGIN: u32 = 0x0000_0001;
-    if wparam as u32 != GID_PAN {
+    if (wparam & 0xFFFF) as u32 != GID_PAN || lparam == 0 {
         return false;
     }
     let mut info: GESTUREINFO = unsafe { std::mem::zeroed() };
     info.cbSize = std::mem::size_of::<GESTUREINFO>() as u32;
-    if unsafe { GetGestureInfo(wparam as _, &mut info) } == 0 {
+    if unsafe { GetGestureInfo(lparam as _, &mut info) } == 0 {
         return false;
     }
-    let is_begin = (info.dwFlags & GF_BEGIN) != 0;
-    // ullArguments packs two signed 32-bit cumulative totals: LOW = x, HIGH = y.
-    let total_x = (info.ullArguments & 0xFFFF_FFFF) as i32;
-    let total_y = ((info.ullArguments >> 32) & 0xFFFF_FFFF) as i32;
+    let Some((pt_x, pt_y, is_begin)) =
+        decode_gesture_pan_point(info.dwID, info.ptsLocation.x, info.ptsLocation.y, info.dwFlags, GID_PAN)
+    else {
+        return false;
+    };
     unsafe {
-        CloseGestureInfoHandle(wparam as _);
+        CloseGestureInfoHandle(lparam as _);
     }
     if let Ok(mut totals) = PAN_TOTALS.lock() {
-        let (_dx, dy) = sotto_desktop::smooth_scroll::gesture_pan_delta(
-            (total_x, total_y),
+        let (_dx, dy_phys) = sotto_desktop::smooth_scroll::gesture_pan_delta(
+            (pt_x, pt_y),
             &mut totals,
             is_begin,
         );
+        let dy = dy_phys / dpi_scale.max(1.0);
         if dy != 0.0 {
             if active_tab == 0 {
                 sotto_desktop::smooth_scroll::STUDIO_SCROLLER.with(|scroller| {
@@ -106,6 +494,7 @@ fn handle_touch_pan_gesture(wparam: usize, _lparam: isize, active_tab: i32) -> b
                     scroller.borrow_mut().scroll_by(dy);
                 });
             }
+            wake_scroll_driver();
         }
         true
     } else {
@@ -165,12 +554,22 @@ unsafe extern "system" fn studio_subclass_wndproc(
                 return 0;
             }
         }
+        WM_SIZE => {
+            if !IS_SWITCHING_TABS.load(std::sync::atomic::Ordering::SeqCst) {
+                let _ = slint::invoke_from_event_loop(|| {
+                    let _ = with_studio(|s| {
+                        sync_studio_dimensions(s, true);
+                    });
+                });
+            }
+        }
         WM_MOUSEHWHEEL => {
             return 0;
         }
         WM_GESTURE => {
-            let active_tab = with_studio(|s| s.get_active_tab()).unwrap_or(0);
-            if handle_touch_pan_gesture(wparam, lparam, active_tab) {
+            let (active_tab, dpi_scale) = with_studio(|s| (s.get_active_tab(), s.window().scale_factor().max(1.0)))
+                .unwrap_or((0, 1.0));
+            if handle_touch_pan_gesture(wparam, lparam, active_tab, dpi_scale) {
                 return 0;
             }
         }
@@ -182,7 +581,11 @@ unsafe extern "system" fn studio_subclass_wndproc(
 
             if !ctrl_or_shift {
                 let delta = ((wparam >> 16) as i16) as f32;
-                let active_tab = with_studio(|s| s.get_active_tab()).unwrap_or(0);
+                let active_tab = with_studio(|s| {
+                    sync_studio_dimensions(s, false);
+                    s.get_active_tab()
+                })
+                .unwrap_or(0);
                 if active_tab == 0 {
                     sotto_desktop::smooth_scroll::STUDIO_SCROLLER.with(|scroller| {
                         let mut engine = scroller.borrow_mut();
@@ -199,6 +602,7 @@ unsafe extern "system" fn studio_subclass_wndproc(
                         engine.on_wheel_accelerated(delta);
                     });
                 }
+                wake_scroll_driver();
                 return 0;
             }
         }
@@ -289,7 +693,11 @@ unsafe extern "system" fn studio_subclass_wndproc(
                 const VK_UP: usize = 0x26;    // Up Arrow
                 const VK_DOWN: usize = 0x28;  // Down Arrow
 
-                let active_tab = with_studio(|s| s.get_active_tab()).unwrap_or(0);
+                let active_tab = with_studio(|s| {
+                    sync_studio_dimensions(s, false);
+                    s.get_active_tab()
+                })
+                .unwrap_or(0);
                 let mut handled = true;
 
                 let dispatch_key = |s: &mut sotto_desktop::smooth_scroll::SmoothScrollEngine| {
@@ -330,6 +738,7 @@ unsafe extern "system" fn studio_subclass_wndproc(
                 }
 
                 if handled {
+                    wake_scroll_driver();
                     return 0;
                 }
             }
@@ -766,6 +1175,7 @@ fn sync_provider_ui(
         s.set_post_process_llm_model(cfg.post_process_llm_model.clone().into());
         s.set_post_process_style(cfg.post_process_style);
         refresh_key_pool_ui(&s, db, Some(transcriber));
+        sync_studio_dimensions(&s, false);
     });
 }
 
@@ -1328,13 +1738,14 @@ fn wire_studio_window(
         }
     });
 
-    // Dedicated Vsync-rate Subpixel Smooth Scroll Physics Timer (16ms ~60fps)
-    // Drives content-y smoothly with dynamic dimensions and zero unnecessary DOM redraws.
+    // Event-driven 60Hz subpixel smooth scroll driver: runs ONLY while a scroller is animating.
     let s_weak_scroll = s_weak.clone();
     let scroll_timer = slint::Timer::default();
     let mut cached_dim_key: (i32, u32, u32, u64) = (-1, 0, 0, 0);
     let mut last_tab: i32 = -1;
     let mut last_written_progress: f32 = -1.0;
+    let mut last_written_providers_progress: f32 = -1.0;
+    let mut last_providers_can_scroll: Option<bool> = None;
     let mut last_written_custom_progress: f32 = -1.0;
     let mut last_custom_can_scroll: Option<bool> = None;
     #[cfg(target_os = "windows")]
@@ -1344,8 +1755,20 @@ fn wire_studio_window(
         slint::TimerMode::Repeated,
         std::time::Duration::from_millis(sotto_desktop::smooth_scroll::RECOMMENDED_FRAME_INTERVAL_MS),
         move || {
-            let Some(s) = s_weak_scroll.upgrade() else { return };
+            let Some(s) = s_weak_scroll.upgrade() else {
+                STUDIO_SCROLL_TIMER.with(|t| {
+                    if let Some(ref timer) = *t.borrow() {
+                        timer.stop();
+                    }
+                });
+                return;
+            };
             if !s.window().is_visible() {
+                STUDIO_SCROLL_TIMER.with(|t| {
+                    if let Some(ref timer) = *t.borrow() {
+                        timer.stop();
+                    }
+                });
                 return;
             }
 
@@ -1359,7 +1782,6 @@ fn wire_studio_window(
             let active_tab = s.get_active_tab();
             if active_tab != last_tab {
                 last_tab = active_tab;
-                // Force dimension re-evaluation on tab switch
                 cached_dim_key = (-1, 0, 0, 0);
             }
 
@@ -1385,26 +1807,7 @@ fn wire_studio_window(
 
                 if dim_key != cached_dim_key {
                     cached_dim_key = dim_key;
-                    use sotto_desktop::smooth_scroll::ROW_SPACING;
-                    let chars_per_line = sotto_desktop::smooth_scroll::chars_per_line_for(win_size.width, scale);
-                    let item_models = s.get_history_items();
-                    let all_items: Vec<HistoryItem> = item_models.iter().collect();
-
-                    let heights: Vec<f32> = all_items.iter()
-                        .map(|item| sotto_desktop::smooth_scroll::estimate_card_height(&item.transcript, chars_per_line))
-                        .collect();
-
-                    let total_content_h = sotto_desktop::smooth_scroll::compute_content_height(&heights, ROW_SPACING)
-                        + sotto_desktop::smooth_scroll::LIST_BOTTOM_PADDING
-                        + sotto_desktop::smooth_scroll::LIST_OVERSCROLL_PX;
-
-                    sotto_desktop::smooth_scroll::STUDIO_SCROLLER.with(|scroller| {
-                        scroller.borrow_mut().set_dimensions(total_content_h, visible_h);
-                    });
-
-                    let can_scroll = total_content_h > visible_h;
-                    s.set_history_can_scroll(can_scroll);
-                    s.set_history_content_height(total_content_h.max(visible_h));
+                    let (_, _) = sync_history_dimensions_and_window(&s, visible_h, true);
                 }
 
                 sotto_desktop::smooth_scroll::STUDIO_SCROLLER.with(|scroller| {
@@ -1422,16 +1825,26 @@ fn wire_studio_window(
                         }
                     } else if !engine.is_animating() {
                         s.set_history_is_scrolling(false);
+                        let progress = engine.progress();
+                        if (progress - last_written_progress).abs() >= 0.005 {
+                            last_written_progress = progress;
+                            s.set_history_scroll_progress(progress);
+                        }
                     }
                 });
+                sync_history_virtual_window(&s, visible_h, false);
             } else if active_tab == 1 {
-                // Providers Tab Lenis Scroller Tick
                 let prov_content_h = s.get_providers_content_height();
                 let prov_visible_h = visible_h;
                 if prov_content_h > 0.0 {
                     sotto_desktop::smooth_scroll::PROVIDERS_SCROLLER.with(|scroller| {
                         scroller.borrow_mut().set_dimensions(prov_content_h, prov_visible_h);
                     });
+                    let prov_can_scroll = prov_content_h > prov_visible_h;
+                    if last_providers_can_scroll != Some(prov_can_scroll) {
+                        last_providers_can_scroll = Some(prov_can_scroll);
+                        s.set_providers_can_scroll(prov_can_scroll);
+                    }
                 }
 
                 sotto_desktop::smooth_scroll::PROVIDERS_SCROLLER.with(|scroller| {
@@ -1440,10 +1853,22 @@ fn wire_studio_window(
                         let scale = s.window().scale_factor().max(1.0);
                         let snapped_y = (new_y * scale).round() / scale;
                         s.set_providers_viewport_y(snapped_y);
+                        s.set_providers_is_scrolling(true);
+                        let progress = engine.progress();
+                        if (progress - last_written_providers_progress).abs() >= 0.005 {
+                            last_written_providers_progress = progress;
+                            s.set_providers_scroll_progress(progress);
+                        }
+                    } else if !engine.is_animating() {
+                        s.set_providers_is_scrolling(false);
+                        let progress = engine.progress();
+                        if (progress - last_written_providers_progress).abs() >= 0.005 {
+                            last_written_providers_progress = progress;
+                            s.set_providers_scroll_progress(progress);
+                        }
                     }
                 });
             } else if active_tab == 2 {
-                // Customization Tab Lenis Scroller Tick
                 let custom_content_h = s.get_custom_content_height();
                 let custom_visible_h = visible_h;
                 if custom_content_h > 0.0 {
@@ -1471,36 +1896,70 @@ fn wire_studio_window(
                         }
                     } else if !engine.is_animating() {
                         s.set_custom_is_scrolling(false);
+                        let progress = engine.progress();
+                        if (progress - last_written_custom_progress).abs() >= 0.005 {
+                            last_written_custom_progress = progress;
+                            s.set_custom_scroll_progress(progress);
+                        }
+                    }
+                });
+            }
+
+            if !sotto_desktop::smooth_scroll::any_studio_scroller_animating() {
+                STUDIO_SCROLL_TIMER.with(|t| {
+                    if let Some(ref timer) = *t.borrow() {
+                        timer.stop();
                     }
                 });
             }
         },
     );
+    if !sotto_desktop::smooth_scroll::any_studio_scroller_animating() {
+        scroll_timer.stop();
+    }
     STUDIO_SCROLL_TIMER.with(|t| {
         *t.borrow_mut() = Some(scroll_timer);
     });
 
     let s_weak_drag = s_weak.clone();
     studio.on_history_drag_scroll(move |norm_y| {
-        if let Some(_s) = s_weak_drag.upgrade() {
+        if let Some(s) = s_weak_drag.upgrade() {
+            sync_studio_dimensions(&s, false);
             sotto_desktop::smooth_scroll::STUDIO_SCROLLER.with(|scroller| {
                 let mut engine = scroller.borrow_mut();
                 let max_s = engine.max_scroll_limit();
                 let target = -norm_y.clamp(0.0, 1.0) * max_s;
                 engine.scroll_to(target);
             });
+            wake_scroll_driver();
+        }
+    });
+
+    let s_weak_prov_drag = s_weak.clone();
+    studio.on_providers_drag_scroll(move |norm_y| {
+        if let Some(s) = s_weak_prov_drag.upgrade() {
+            sync_studio_dimensions(&s, false);
+            sotto_desktop::smooth_scroll::PROVIDERS_SCROLLER.with(|scroller| {
+                let mut engine = scroller.borrow_mut();
+                let max_s = engine.max_scroll_limit();
+                let target = -norm_y.clamp(0.0, 1.0) * max_s;
+                engine.scroll_to(target);
+            });
+            wake_scroll_driver();
         }
     });
 
     let s_weak_custom_drag = s_weak.clone();
     studio.on_custom_drag_scroll(move |norm_y| {
-        if let Some(_s) = s_weak_custom_drag.upgrade() {
+        if let Some(s) = s_weak_custom_drag.upgrade() {
+            sync_studio_dimensions(&s, false);
             sotto_desktop::smooth_scroll::CUSTOM_SCROLLER.with(|scroller| {
                 let mut engine = scroller.borrow_mut();
                 let max_s = engine.max_scroll_limit();
                 let target = -norm_y.clamp(0.0, 1.0) * max_s;
                 engine.scroll_to(target);
             });
+            wake_scroll_driver();
         }
     });
 
@@ -1551,6 +2010,7 @@ fn wire_studio_window(
         if let Some(s) = s_weak_cycle.upgrade() {
             let next = (s.get_active_state() + 1) % 5;
             s.set_active_state(next);
+            wake_pill_anim_timer();
             println!("[Studio Preview] Cycled preview state to {}", next);
             let _ = std::io::stdout().flush();
         }
@@ -1561,6 +2021,7 @@ fn wire_studio_window(
     studio.on_select_state(move |s| {
         if let Some(studio) = s_weak_sel.upgrade() {
             studio.set_active_state(s);
+            wake_pill_anim_timer();
             println!("[Studio Panel] Direct preview state selected: {}", s);
             let _ = std::io::stdout().flush();
         }
@@ -1584,13 +2045,19 @@ fn wire_studio_window(
         }
     });
 
-    // 4. Studio Window Close handler: Hide instead of terminating app, then trim memory
+    // 4. Studio Window Close handler: Hide immediately and defer full deallocation cleanly
     let s_vis_close = Arc::clone(studio_visible);
     studio.window().on_close_requested(move || {
         s_vis_close.store(false, Ordering::SeqCst);
-        println!("[Studio Suite] Window closed by user (running quietly in background)");
-        let _ = std::io::stdout().flush();
-        trim_working_set();
+        let vis_drop = Arc::clone(&s_vis_close);
+        let _ = slint::invoke_from_event_loop(move || {
+            // Skip drop if re-opened before the deferred cleanup ran
+            if !vis_drop.load(Ordering::SeqCst) {
+                drop_studio_instance(&vis_drop);
+                println!("[Studio Action] Studio Suite closed (X) and deallocated from RAM");
+                let _ = std::io::stdout().flush();
+            }
+        });
         slint::CloseRequestResponse::HideWindow
     });
 
@@ -2314,12 +2781,16 @@ fn wire_studio_window(
             }
 
             // Apply immediately to live floating pill
+            ACTIVE_OPT_IDLE.store(cfg.opt_idle, Ordering::Relaxed);
             pill.set_opt_idle(cfg.opt_idle);
             pill.set_opt_listening(cfg.opt_listening);
             pill.set_opt_transcribe(cfg.opt_transcribe);
             pill.set_opt_success(cfg.opt_success);
             pill.set_opt_error(cfg.opt_error);
             pill.set_surface_opacity(cfg.surface_opacity);
+            if cfg.opt_idle != 0 {
+                wake_pill_anim_timer();
+            }
 
             // Apply speech recording behavior to hotkey manager on Save Preset!
             let hk_mode = resolve_hotkey_mode(false, cfg.trigger_mode);
@@ -2415,6 +2886,10 @@ fn wire_studio_window(
                 sync_provider_ui(db, &tr);
             }
         }
+        let _ = with_studio(|s| sync_studio_dimensions(s, true));
+        if tab == 2 {
+            wake_pill_anim_timer();
+        }
         println!("[Studio Suite] Tab switched to: {}", match tab {
             0 => "Dictations",
             1 => "Providers",
@@ -2468,7 +2943,7 @@ fn wire_studio_window(
                 if let Some(s) = s_cb.upgrade() {
                     let empty_model: Rc<VecModel<HistoryItem>> = Rc::new(VecModel::default());
                     s.set_history_items(ModelRc::from(empty_model));
-                    s.set_history_count(0);
+                    set_studio_history_list(&s, Vec::new());
                     s.set_purge_confirm_armed(false);
                     s.set_history_viewport_y(0.0);
                     s.set_history_scroll_progress(0.0);
@@ -2477,7 +2952,6 @@ fn wire_studio_window(
                     sotto_desktop::smooth_scroll::STUDIO_SCROLLER.with(|scroller| {
                         scroller.borrow_mut().jump_to(0.0);
                     });
-                    STUDIO_HISTORY_GEN.fetch_add(1, Ordering::SeqCst);
                 }
             });
         });
@@ -2485,30 +2959,8 @@ fn wire_studio_window(
 
 // (Issue R10 on_history_drag_scroll unified at scroller init)
 
-    // Populate initial items from SQLite WAL database
-    let recent_records = history_queue.db().get_recent(100).unwrap_or_default();
-    let count = recent_records.len() as i32;
-    let slint_items: Vec<HistoryItem> = recent_records
-        .into_iter()
-        .map(|r| {
-            let formatted = app_icon::format_app_name(&r.target_app);
-            let (icon, has_icon) = app_icon::get_app_icon(&formatted, Some(&r.target_app));
-            HistoryItem {
-                id: r.id as i32,
-                timestamp_str: r.timestamp_str.into(),
-                transcript: r.transcript.into(),
-                duration_ms: r.duration_ms,
-                duration_str: r.duration_str.into(),
-                target_app: formatted.into(),
-                app_icon: icon,
-                has_icon,
-            }
-        })
-        .collect();
-    let model = Rc::new(VecModel::from(slint_items));
-    studio.set_history_items(ModelRc::from(model));
-    studio.set_history_count(count);
-    STUDIO_HISTORY_GEN.fetch_add(1, Ordering::SeqCst);
+    // Populate initial items from SQLite WAL database without blocking on icon lookups
+    hydrate_studio_history_nonblocking(studio, history_queue.db(), 500);
 }
 
 /// Lazy instantiates or toggles the Studio Window
@@ -2519,109 +2971,84 @@ fn toggle_studio_window(
     cycle_fn: &Arc<dyn Fn() + Send + Sync>,
     history_queue: &Arc<AsyncHistoryQueue>,
 ) {
+    let currently_visible = studio_visible.load(Ordering::SeqCst);
+    if currently_visible {
+        drop_studio_instance(studio_visible);
+        println!("[Studio Action] Studio Suite closed and deallocated from RAM");
+        let _ = std::io::stdout().flush();
+        return;
+    }
+
     STUDIO_INSTANCE.with(|cell| {
         let mut guard = cell.borrow_mut();
-        let currently_visible = studio_visible.load(Ordering::SeqCst);
-
-        if currently_visible {
-            if let Some(s) = guard.take() {
-                let _ = s.hide();
-                drop(s);
-            }
-            studio_visible.store(false, Ordering::SeqCst);
-            println!("[Studio Action] Studio Suite closed and deallocated from RAM");
-            trim_working_set();
-        } else {
-            if guard.is_none() {
-                match StudioWindow::new() {
-                    Ok(studio) => {
-                        wire_studio_window(
-                            &studio,
-                            pill_weak,
-                            engine_state,
-                            studio_visible,
-                            cycle_fn.clone(),
-                            history_queue,
-                        );
-                        *guard = Some(studio);
-                        println!("[Studio Architecture] StudioWindow instantiated on demand");
-                    }
-                    Err(e) => {
-                        eprintln!("[Studio Architecture Error] Failed to create StudioWindow: {}", e);
-                        return;
-                    }
+        if guard.is_none() {
+            match StudioWindow::new() {
+                Ok(studio) => {
+                    wire_studio_window(
+                        &studio,
+                        pill_weak,
+                        engine_state,
+                        studio_visible,
+                        cycle_fn.clone(),
+                        history_queue,
+                    );
+                    *guard = Some(studio);
+                    println!("[Studio Architecture] StudioWindow instantiated on demand");
+                }
+                Err(e) => {
+                    eprintln!("[Studio Architecture Error] Failed to create StudioWindow: {}", e);
+                    return;
                 }
             }
-            if let Some(s) = guard.as_ref() {
-                if let Some(p) = pill_weak.upgrade() {
-                    let cfg = config::AppConfig::load();
-                    // Isolated from live pill state: preview stage maintains selected preview state
-                    s.set_opt_idle(p.get_opt_idle());
-                    s.set_opt_listening(p.get_opt_listening());
-                    s.set_opt_transcribe(p.get_opt_transcribe());
-                    s.set_opt_success(p.get_opt_success());
-                    s.set_opt_error(p.get_opt_error());
-                    s.set_surface_opacity(p.get_surface_opacity());
-                    s.set_trigger_mode(cfg.trigger_mode);
-                    s.set_capture_mode(cfg.capture_mode.as_i32());
-                    s.set_chimes_enabled(cfg.chimes_enabled);
-                    s.set_media_pause_enabled(cfg.media_pause_enabled);
-                    s.set_trigger_primary_display(cfg.primary_trigger.display().into());
-                    s.set_trigger_secondary_display(
-                        cfg.secondary_trigger
-                            .as_ref()
-                            .map(|b| b.display())
-                            .unwrap_or_else(|| "Not set".to_string())
-                            .into(),
-                    );
-                    s.set_cancel_primary_display(
-                        cfg.primary_cancel_trigger
-                            .as_ref()
-                            .map(|b| b.display())
-                            .unwrap_or_else(|| "Not set".to_string())
-                            .into(),
-                    );
-                    s.set_cancel_secondary_display(
-                        cfg.secondary_cancel_trigger
-                            .as_ref()
-                            .map(|b| b.display())
-                            .unwrap_or_else(|| "Not set".to_string())
-                            .into(),
-                    );
-                    #[cfg(target_os = "windows")]
-                    s.set_launch_on_startup(startup::is_startup_enabled());
-                    #[cfg(not(target_os = "windows"))]
-                    s.set_launch_on_startup(cfg.launch_on_startup);
-                }
-                // Refresh recent items from SQLite DB
-                if let Ok(recent) = history_queue.db().get_recent(100) {
-                    let count = recent.len() as i32;
-                    let items: Vec<HistoryItem> = recent
-                        .into_iter()
-                        .map(|r| {
-                            let formatted = app_icon::format_app_name(&r.target_app);
-                            let (icon, has_icon) = app_icon::get_app_icon(&formatted, Some(&r.target_app));
-                            HistoryItem {
-                                id: r.id as i32,
-                                timestamp_str: r.timestamp_str.into(),
-                                transcript: r.transcript.into(),
-                                duration_ms: r.duration_ms,
-                                duration_str: r.duration_str.into(),
-                                target_app: formatted.into(),
-                                app_icon: icon,
-                                has_icon,
-                            }
-                        })
-                        .collect();
-                    s.set_history_items(ModelRc::from(Rc::new(VecModel::from(items))));
-                    s.set_history_count(count);
-                    s.set_purge_confirm_armed(false);
-                }
-                let _ = s.show();
-                bring_studio_to_front(s);
-                studio_visible.store(true, Ordering::SeqCst);
-                println!("[Studio Action] Studio Suite shown & focused");
+        }
+        if let Some(s) = guard.as_ref() {
+            if let Some(p) = pill_weak.upgrade() {
+                let cfg = config::AppConfig::load();
+                // Isolated from live pill state: preview stage maintains selected preview state
+                s.set_opt_idle(p.get_opt_idle());
+                s.set_opt_listening(p.get_opt_listening());
+                s.set_opt_transcribe(p.get_opt_transcribe());
+                s.set_opt_success(p.get_opt_success());
+                s.set_opt_error(p.get_opt_error());
+                s.set_surface_opacity(p.get_surface_opacity());
+                s.set_trigger_mode(cfg.trigger_mode);
+                s.set_capture_mode(cfg.capture_mode.as_i32());
+                s.set_chimes_enabled(cfg.chimes_enabled);
+                s.set_media_pause_enabled(cfg.media_pause_enabled);
+                s.set_trigger_primary_display(cfg.primary_trigger.display().into());
+                s.set_trigger_secondary_display(
+                    cfg.secondary_trigger
+                        .as_ref()
+                        .map(|b| b.display())
+                        .unwrap_or_else(|| "Not set".to_string())
+                        .into(),
+                );
+                s.set_cancel_primary_display(
+                    cfg.primary_cancel_trigger
+                        .as_ref()
+                        .map(|b| b.display())
+                        .unwrap_or_else(|| "Not set".to_string())
+                        .into(),
+                );
+                s.set_cancel_secondary_display(
+                    cfg.secondary_cancel_trigger
+                        .as_ref()
+                        .map(|b| b.display())
+                        .unwrap_or_else(|| "Not set".to_string())
+                        .into(),
+                );
+                #[cfg(target_os = "windows")]
+                s.set_launch_on_startup(startup::is_startup_enabled());
+                #[cfg(not(target_os = "windows"))]
+                s.set_launch_on_startup(cfg.launch_on_startup);
             }
+            hydrate_studio_history_nonblocking(s, history_queue.db(), 500);
+            s.set_purge_confirm_armed(false);
+            let _ = s.show();
+            bring_studio_to_front(s);
+            studio_visible.store(true, Ordering::SeqCst);
+            wake_pill_anim_timer();
+            println!("[Studio Action] Studio Suite shown & focused");
         }
         let _ = std::io::stdout().flush();
     });
@@ -2728,6 +3155,7 @@ fn start_dictation(
         pill.set_timer_sec(0);
         pill.set_timer_text("0:00".into());
     }
+    wake_pill_anim_timer();
 // Studio preview stage remains independent from live mic start
 
     println!("[Pipeline] State -> 1: Listening (Audio Capture Started)");
@@ -2825,6 +3253,7 @@ fn stop_dictation(
     if let Some(pill) = pill_weak.upgrade() {
         pill.set_active_state(2);
     }
+    wake_pill_anim_timer();
 // Studio preview stage remains independent from live mic stop
 
     println!("[Pipeline] State -> 2: Transcribing (Audio Stopped, Groq HTTP/2 Upload)");
@@ -2964,6 +3393,7 @@ fn stop_dictation(
                                 if let Some(p) = p1.upgrade() {
                                     p.set_active_state(3); // State 3: Success
                                 }
+                                wake_pill_anim_timer();
 // Studio preview isolated
                                 println!("[Pipeline] State -> 3: Success");
                             });
@@ -2989,7 +3419,7 @@ fn stop_dictation(
                             media::resume_after_dictation();
 
                             // Asynchronously enqueue dictation into SQLite WAL DB (zero injection latency)
-                            let _ = app_icon::get_app_icon(&app_name, exe_path.as_deref());
+                            let _ = app_icon::prewarm_app_icon(&app_name, exe_path.as_deref());
                             let exe_path_clone = exe_path.clone();
                             history_async.enqueue_insert(
                                 cleaned_text.clone(),
@@ -2998,59 +3428,7 @@ fn stop_dictation(
                                 move |rec| {
                                     let exe_path_ui = exe_path_clone.clone();
                                     let _ = slint::invoke_from_event_loop(move || {
-                                        with_studio(|s| {
-                                            let mut current_items: Vec<HistoryItem> = Vec::new();
-                                            let old_model = s.get_history_items();
-                                            for i in 0..old_model.row_count() {
-                                                if let Some(item) = old_model.row_data(i) {
-                                                    current_items.push(item);
-                                                }
-                                            }
-                                            let formatted = app_icon::format_app_name(&rec.target_app);
-                                            let (icon, has_icon) = app_icon::get_app_icon(&formatted, exe_path_ui.as_deref());
-                                            // Pre-compute the new card's real estimated height BEFORE rec.transcript
-                                            // is moved into the item (used by the R8 anchor below).
-                                            let a_scale = s.window().scale_factor().max(1.0);
-                                            let a_cpl = sotto_desktop::smooth_scroll::chars_per_line_for(
-                                                s.window().size().width,
-                                                a_scale,
-                                            );
-                                            let inserted_h = sotto_desktop::smooth_scroll::estimate_card_height(
-                                                &rec.transcript,
-                                                a_cpl,
-                                            ) + sotto_desktop::smooth_scroll::ROW_SPACING;
-                                            current_items.insert(0, HistoryItem {
-                                                id: rec.id as i32,
-                                                timestamp_str: rec.timestamp_str.into(),
-                                                transcript: rec.transcript.into(),
-                                                duration_ms: rec.duration_ms,
-                                                duration_str: rec.duration_str.into(),
-                                                target_app: formatted.into(),
-                                                app_icon: icon,
-                                                has_icon,
-                                            });
-                                            if current_items.len() > 500 {
-                                                current_items.truncate(500);
-                                            }
-                                            let new_count = current_items.len() as i32;
-                                            s.set_history_items(ModelRc::from(Rc::new(VecModel::from(current_items))));
-                                            s.set_history_count(new_count);
-                                            STUDIO_HISTORY_GEN.fetch_add(1, Ordering::SeqCst);
-                                            // Anchor scrolling (Fix R8): if user is scrolled down reading history,
-                                            // shift scroll position by the NEW card's real estimated height so content
-                                            // under their eyes does not jump. Write the viewport immediately: at rest
-                                            // no tick fires to sync it, and a stale write would jump on next input.
-                                            sotto_desktop::smooth_scroll::STUDIO_SCROLLER.with(|scroller| {
-                                                let mut eng = scroller.borrow_mut();
-                                                if eng.current_y() < -15.0 {
-                                                    eng.shift_anchor(-inserted_h);
-                                                    let snapped = (eng.current_y() * a_scale).round() / a_scale;
-                                                    s.set_history_viewport_y(snapped);
-                                                }
-                                            });
-                                            println!("[Studio History] Inserted new transcription #{} into live Studio list (total: {})", rec.id, new_count);
-                                            let _ = std::io::stdout().flush();
-                                        });
+                                        prepend_studio_history_record(rec, exe_path_ui, "new");
                                     });
                                 },
                             );
@@ -3081,6 +3459,7 @@ fn stop_dictation(
                                 if let Some(p) = p1.upgrade() {
                                     p.set_active_state(4); // State 4: Error
                                 }
+                                wake_pill_anim_timer();
 // Studio preview isolated
                                 println!("[Pipeline] State -> 4: Error (Audio safely buffered in RAM for retry)");
                             });
@@ -3164,6 +3543,7 @@ fn spawn_long_form_resolution(
                 if let Some(p) = p1.upgrade() {
                     p.set_active_state(4); // State 4: Error
                 }
+                wake_pill_anim_timer();
             });
 
             std::thread::sleep(Duration::from_millis(6000));
@@ -3261,6 +3641,7 @@ fn spawn_long_form_resolution(
             if let Some(p) = p1.upgrade() {
                 p.set_active_state(3); // State 3: Success
             }
+            wake_pill_anim_timer();
             println!("[Pipeline] State -> 3: Success (LongForm)");
         });
 
@@ -3280,7 +3661,7 @@ fn spawn_long_form_resolution(
 
         media::resume_after_dictation();
 
-        let _ = app_icon::get_app_icon(&app_name, exe_path.as_deref());
+        let _ = app_icon::prewarm_app_icon(&app_name, exe_path.as_deref());
         let exe_path_clone = exe_path.clone();
         history_queue.enqueue_insert(
             cleaned_text.clone(),
@@ -3289,62 +3670,7 @@ fn spawn_long_form_resolution(
             move |rec| {
                 let exe_path_ui = exe_path_clone.clone();
                 let _ = slint::invoke_from_event_loop(move || {
-                    with_studio(|s| {
-                        let mut current_items: Vec<HistoryItem> = Vec::new();
-                        let old_model = s.get_history_items();
-                        for i in 0..old_model.row_count() {
-                            if let Some(item) = old_model.row_data(i) {
-                                current_items.push(item);
-                            }
-                        }
-                        let formatted = app_icon::format_app_name(&rec.target_app);
-                        let (icon, has_icon) =
-                            app_icon::get_app_icon(&formatted, exe_path_ui.as_deref());
-                        let a_scale = s.window().scale_factor().max(1.0);
-                        let a_cpl = sotto_desktop::smooth_scroll::chars_per_line_for(
-                            s.window().size().width,
-                            a_scale,
-                        );
-                        let inserted_h = sotto_desktop::smooth_scroll::estimate_card_height(
-                            &rec.transcript,
-                            a_cpl,
-                        ) + sotto_desktop::smooth_scroll::ROW_SPACING;
-                        current_items.insert(
-                            0,
-                            HistoryItem {
-                                id: rec.id as i32,
-                                timestamp_str: rec.timestamp_str.into(),
-                                transcript: rec.transcript.into(),
-                                duration_ms: rec.duration_ms,
-                                duration_str: rec.duration_str.into(),
-                                target_app: formatted.into(),
-                                app_icon: icon,
-                                has_icon,
-                            },
-                        );
-                        if current_items.len() > 500 {
-                            current_items.truncate(500);
-                        }
-                        let new_count = current_items.len() as i32;
-                        s.set_history_items(ModelRc::from(Rc::new(VecModel::from(
-                            current_items,
-                        ))));
-                        s.set_history_count(new_count);
-                        STUDIO_HISTORY_GEN.fetch_add(1, Ordering::SeqCst);
-                        sotto_desktop::smooth_scroll::STUDIO_SCROLLER.with(|scroller| {
-                            let mut eng = scroller.borrow_mut();
-                            if eng.current_y() < -15.0 {
-                                eng.shift_anchor(-inserted_h);
-                                let snapped = (eng.current_y() * a_scale).round() / a_scale;
-                                s.set_history_viewport_y(snapped);
-                            }
-                        });
-                        println!(
-                            "[Studio History] Inserted long-form transcription #{} (total: {})",
-                            rec.id, new_count
-                        );
-                        let _ = std::io::stdout().flush();
-                    });
+                    prepend_studio_history_record(rec, exe_path_ui, "long-form");
                 });
             },
         );
@@ -3440,6 +3766,7 @@ fn retry_dictation(
         if let Some(pill) = pill_weak.upgrade() {
             pill.set_active_state(2);
         }
+        wake_pill_anim_timer();
 // Studio preview isolated
 
         println!(
@@ -3507,6 +3834,7 @@ fn retry_dictation(
                             if let Some(p) = p1.upgrade() {
                                 p.set_active_state(3); // State 3: Success
                             }
+                            wake_pill_anim_timer();
 // Studio preview isolated
                             println!("[Pipeline] State -> 3: Success (Retry)");
                         });
@@ -3517,7 +3845,7 @@ fn retry_dictation(
                         }
 
                         // Asynchronously enqueue dictation into SQLite WAL DB
-                        let _ = app_icon::get_app_icon(&app_name, exe_path.as_deref());
+                        let _ = app_icon::prewarm_app_icon(&app_name, exe_path.as_deref());
                         let exe_path_clone = exe_path.clone();
                         history_async.enqueue_insert(
                             cleaned_text.clone(),
@@ -3526,35 +3854,7 @@ fn retry_dictation(
                             move |rec| {
                                 let exe_path_ui = exe_path_clone.clone();
                                 let _ = slint::invoke_from_event_loop(move || {
-                                    with_studio(|s| {
-                                        let mut current_items: Vec<HistoryItem> = Vec::new();
-                                        let old_model = s.get_history_items();
-                                        for i in 0..old_model.row_count() {
-                                            if let Some(item) = old_model.row_data(i) {
-                                                current_items.push(item);
-                                            }
-                                        }
-                                        let formatted = app_icon::format_app_name(&rec.target_app);
-                                        let (icon, has_icon) = app_icon::get_app_icon(&formatted, exe_path_ui.as_deref());
-                                        current_items.insert(0, HistoryItem {
-                                            id: rec.id as i32,
-                                            timestamp_str: rec.timestamp_str.into(),
-                                            transcript: rec.transcript.into(),
-                                            duration_ms: rec.duration_ms,
-                                            duration_str: rec.duration_str.into(),
-                                            target_app: formatted.into(),
-                                            app_icon: icon,
-                                            has_icon,
-                                        });
-                                        if current_items.len() > 500 {
-                                            current_items.truncate(500);
-                                        }
-                                        let new_count = current_items.len() as i32;
-                                        s.set_history_items(ModelRc::from(Rc::new(VecModel::from(current_items))));
-                                        s.set_history_count(new_count);
-                                        println!("[Studio History] Inserted retry transcription #{} into live Studio list (total: {})", rec.id, new_count);
-                                        let _ = std::io::stdout().flush();
-                                    });
+                                    prepend_studio_history_record(rec, exe_path_ui, "retry");
                                 });
                             },
                         );
@@ -3587,6 +3887,7 @@ fn retry_dictation(
                             if let Some(p) = p1.upgrade() {
                                 p.set_active_state(4); // State 4: Error
                             }
+                            wake_pill_anim_timer();
 // Studio preview isolated
                             println!("[Pipeline] State -> 4: Error (Retry Failed)");
                         });
@@ -4806,6 +5107,7 @@ fn load_or_create_ipc_token() -> String {
     if let Ok(mut guard) = GLOBAL_POST_PROCESSOR.lock() {
         *guard = Some(Arc::clone(&post_processor));
     }
+    ACTIVE_OPT_IDLE.store(app_cfg.opt_idle, Ordering::Relaxed);
     pill.set_opt_idle(app_cfg.opt_idle);
     pill.set_opt_listening(app_cfg.opt_listening);
     pill.set_opt_transcribe(app_cfg.opt_transcribe);
@@ -5063,7 +5365,7 @@ fn load_or_create_ipc_token() -> String {
         }
     };
 
-    // 8. Adaptive Animation Clock (Zero-Cost Idle Architecture)
+    // 8. Adaptive Animation Clock (Event-Driven Zero-Cost Idle Architecture)
     let pill_anim_weak = pill.as_weak();
     let recorder_anim = Arc::clone(&recorder);
     let engine_state_anim = Arc::clone(&engine_state);
@@ -5076,7 +5378,6 @@ fn load_or_create_ipc_token() -> String {
     let mut adaptive_ambient: f32 = 0.0080;
     let mut speech_hangover_ticks: u32 = 0;
     let mut idle_tick_divider: u32 = 0;
-    let mut cached_opt_idle: i32 = 0;
     let mut was_listening: bool = false;
     let mut last_studio_preview_state: i32 = -1;
 
@@ -5085,14 +5386,17 @@ fn load_or_create_ipc_token() -> String {
         Duration::from_millis(20),
         move || {
             let pill_opt = pill_anim_weak.upgrade();
-            let is_listening = engine_state_anim.load(Ordering::Relaxed) == 1;
+            let cur_state = engine_state_anim.load(Ordering::Relaxed);
+            let is_listening = cur_state == 1;
+            let studio_vis = studio_vis_anim.load(Ordering::Relaxed);
 
             // Live Studio Customization Preview Pill Animation:
             // Animates preview pill inside Studio window only during Listening preview state
-            if studio_vis_anim.load(Ordering::Relaxed) {
+            let (studio_tab, studio_preview) = if studio_vis {
                 with_studio(|s| {
-                    if s.get_active_tab() == 2 {
-                        let preview_state = s.get_active_state();
+                    let tab = s.get_active_tab();
+                    let preview_state = s.get_active_state();
+                    if tab == 2 {
                         if preview_state == 1 {
                             studio_anim_tick += 1.0;
                             s.set_anim_tick(studio_anim_tick);
@@ -5123,9 +5427,14 @@ fn load_or_create_ipc_token() -> String {
                         }
                         last_studio_preview_state = preview_state;
                     }
-                });
-            }
+                    (tab, preview_state)
+                })
+                .unwrap_or((-1, -1))
+            } else {
+                (-1, -1)
+            };
 
+            let opt_idle = ACTIVE_OPT_IDLE.load(Ordering::Relaxed);
             if is_listening {
                 was_listening = true;
                 tick += 1.0;
@@ -5140,7 +5449,6 @@ fn load_or_create_ipc_token() -> String {
                             p.set_timer_sec((secs % 60) as i32);
                             p.set_timer_text(timer_str.clone().into());
                         }
-// Studio preview timer isolated
                     }
                 }
 
@@ -5212,7 +5520,6 @@ fn load_or_create_ipc_token() -> String {
                     p.set_bar4_h(b4);
                     p.set_bar5_h(b5);
                 }
-// Handled by studio_anim_tick above
             } else {
                 // Non-listening states
                 if was_listening {
@@ -5226,40 +5533,55 @@ fn load_or_create_ipc_token() -> String {
                         p.set_bar4_h(3.0);
                         p.set_bar5_h(3.0);
                     }
-// Handled by studio_anim_tick above
                 }
 
-                let cur_state = engine_state_anim.load(Ordering::Relaxed);
                 if cur_state == 0 {
-                    // State 0: Idle
-                    // Check if idle option requires animation: Option 0 (Micro Mic) is static!
-                    // Check opt_idle every 25th tick (500ms) to avoid redundant FFI property queries
-                    if idle_tick_divider % 25 == 0 {
-                        cached_opt_idle = pill_opt.as_ref().map(|p| p.get_opt_idle()).unwrap_or(0);
-                    }
                     idle_tick_divider = (idle_tick_divider + 1) % 100;
-                    if cached_opt_idle != 0 {
-                        // Pulsing Pip / Accent: animate at gentle throttled 80ms cadence (every 4th tick)
-                        if idle_tick_divider % 4 == 0 {
-                            tick += 1.0;
-                            if let Some(p) = &pill_opt {
-                                p.set_anim_tick(tick);
-                            }
-// Handled by studio_anim_tick above
+                    if opt_idle != 0 && idle_tick_divider % 4 == 0 {
+                        tick += 1.0;
+                        if let Some(p) = &pill_opt {
+                            p.set_anim_tick(tick);
                         }
                     }
-                    // When cached_opt_idle == 0 (Micro Mic): ZERO property updates, ZERO window repaints, 0.0% CPU!
                 } else {
-                    // Transcribing, Success, Error: brief transient states
                     tick += 1.0;
                     if let Some(p) = &pill_opt {
                         p.set_anim_tick(tick);
                     }
-// Handled by studio_anim_tick above
                 }
+            }
+
+            if !should_anim_timer_run(
+                cur_state,
+                opt_idle,
+                studio_vis,
+                studio_tab,
+                studio_preview,
+                was_listening,
+                last_studio_preview_state,
+            ) {
+                STUDIO_ANIM_TIMER.with(|t| {
+                    if let Some(ref anim) = *t.borrow() {
+                        anim.stop();
+                    }
+                });
             }
         },
     );
+    if !should_anim_timer_run(
+        engine_state.load(Ordering::Relaxed),
+        ACTIVE_OPT_IDLE.load(Ordering::Relaxed),
+        studio_visible.load(Ordering::Relaxed),
+        -1,
+        -1,
+        false,
+        -1,
+    ) {
+        timer.stop();
+    }
+    STUDIO_ANIM_TIMER.with(|t| {
+        *t.borrow_mut() = Some(timer);
+    });
 
     // 9. IPC Background Listener: Responds to secondary .exe launches
     let s_vis_ipc = Arc::clone(&studio_visible);
@@ -5590,6 +5912,39 @@ mod tests {
     use super::*;
 
     #[test]
+    fn test_should_anim_timer_run_gates_idle_and_wakes_on_activity() {
+        // Static Idle with Studio closed: stopped (0 Hz).
+        assert!(!should_anim_timer_run(0, 0, false, 0, 0, false, -1));
+        // Static Idle on Dictations or Providers tab: stopped (0 Hz).
+        assert!(!should_anim_timer_run(0, 0, true, 0, 1, false, -1));
+        assert!(!should_anim_timer_run(0, 0, true, 1, 1, false, -1));
+        // Tab 2 Preview in non-listening settled state: stopped (0 Hz).
+        assert!(!should_anim_timer_run(0, 0, true, 2, 0, false, 0));
+        // Tab 2 Preview switching from Listening(1) -> Idle(0): 1 settle frame runs.
+        assert!(should_anim_timer_run(0, 0, true, 2, 0, false, 1));
+        // Tab 2 Preview Listening(1): active.
+        assert!(should_anim_timer_run(0, 0, true, 2, 1, false, 1));
+        // Animated pill idle option (opt_idle != 0): active.
+        assert!(should_anim_timer_run(0, 1, false, 0, 0, false, -1));
+        // Recording/transcribing/success/error: active.
+        assert!(should_anim_timer_run(1, 0, false, 0, 0, false, -1));
+        assert!(should_anim_timer_run(2, 0, false, 0, 0, false, -1));
+        // Exiting listening: 1 settle frame runs (`was_listening`).
+        assert!(should_anim_timer_run(0, 0, false, 0, 0, true, -1));
+    }
+
+    #[test]
+    fn test_decode_gesture_pan_point_validates_id_flags_and_signed_coords() {
+        const TEST_GID_PAN: u32 = 4;
+        const GF_BEGIN: u32 = 0x0000_0001;
+
+        assert_eq!(decode_gesture_pan_point(TEST_GID_PAN, -12, 340, GF_BEGIN, TEST_GID_PAN), Some((-12, 340, true)));
+        assert_eq!(decode_gesture_pan_point(TEST_GID_PAN, 0, -45, 0, TEST_GID_PAN), Some((0, -45, false)));
+        // Non-pan gestures must return None so Windows DefWindowProc handles them.
+        assert_eq!(decode_gesture_pan_point(3 /* GID_ZOOM */, 10, 20, 0, TEST_GID_PAN), None);
+    }
+
+    #[test]
     fn test_conservative_inactivity_tracker() {
         let tracker = InactivityTracker::new();
         assert!(!tracker.is_trimmed());
@@ -5834,5 +6189,54 @@ mod tests {
         assert_eq!(resolve_hotkey_mode(true, 0), hotkey::HotkeyMode::HoldToTalk);
         assert_eq!(resolve_hotkey_mode(true, 1), hotkey::HotkeyMode::HoldToTalk);
         assert_eq!(resolve_hotkey_mode(false, 99), hotkey::HotkeyMode::Toggle);
+    }
+
+    #[test]
+    fn test_drop_studio_instance_deallocates_caches_and_resets_visibility() {
+        let vis = Arc::new(AtomicBool::new(true));
+        STUDIO_HISTORY_CACHE.with(|c| {
+            let mut items = c.borrow_mut();
+            items.clear();
+            items.push(HistoryItem {
+                id: 1,
+                timestamp_str: "now".into(),
+                transcript: "Testing studio teardown cache release.".into(),
+                duration_ms: 900,
+                duration_str: "0.9s".into(),
+                target_app: "Notepad".into(),
+                app_icon: slint::Image::default(),
+                has_icon: false,
+            });
+        });
+        let (count, total_h) = recompute_studio_history_layout(1040, 1.0);
+        assert_eq!(count, 1);
+        assert!(total_h > 0.0);
+
+        STUDIO_CACHED_WINDOW.with(|w| {
+            *w.borrow_mut() = Some((
+                sotto_desktop::smooth_scroll::VirtualWindow {
+                    first_idx: 0,
+                    last_idx: 1,
+                    top_spacer: 0.0,
+                    bottom_spacer: 0.0,
+                },
+                0.0,
+                Instant::now(),
+            ));
+        });
+
+        drop_studio_instance(&vis);
+
+        assert!(!vis.load(Ordering::SeqCst));
+        STUDIO_HISTORY_CACHE.with(|c| {
+            assert!(c.borrow().is_empty());
+            assert_eq!(c.borrow().capacity(), 0);
+        });
+        STUDIO_HISTORY_LAYOUT.with(|l| {
+            let layout = l.borrow();
+            assert!(layout.offsets.is_empty());
+            assert_eq!(layout.total_content_h, 0.0);
+        });
+        STUDIO_CACHED_WINDOW.with(|w| assert!(w.borrow().is_none()));
     }
 }

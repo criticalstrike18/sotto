@@ -473,3 +473,114 @@ fn test_no_excess_void_on_customization_tab_at_max_scroll() {
         "excess gap/void below customization content: gap is {gap:.1}px (bottom card edge: {bottom_edge:.1}, container bottom: {container_bottom:.1})"
     );
 }
+
+#[test]
+fn test_virtualized_history_matches_full_list_geometry() {
+    use sotto_desktop::smooth_scroll::{
+        chars_per_line_for, compute_history_layout, compute_virtual_window, VIRTUAL_CUSHION_PX,
+    };
+
+    let make_items = || -> Vec<HistoryItem> {
+        (0..80)
+            .map(|i| {
+                let text = if i % 5 == 0 {
+                    format!("Item #{i}: longer multi-line dictation transcript to test variable heights cleanly across virtualization slices.")
+                } else {
+                    format!("Item #{i}: short dictation.")
+                };
+                item(i, &text)
+            })
+            .collect()
+    };
+
+    // Baseline: non-virtualized full list
+    let full = studio();
+    full.window().set_size(slint::PhysicalSize::new(1040, 840));
+    let full_items = make_items();
+    let full_cpl = chars_per_line_for(1040, full.window().scale_factor().max(1.0));
+    let layout = compute_history_layout(
+        full_items.iter().map(|it| it.transcript.as_str()),
+        full_cpl,
+    );
+    let view_h = full.get_history_viewport_height();
+    full.set_history_items(ModelRc::from(Rc::new(VecModel::from(full_items))));
+    full.set_history_count(80);
+    full.set_history_content_height(layout.total_content_h.max(view_h));
+
+    // Virtualized: renders only slice + spacers
+    let virt = studio();
+    virt.window().set_size(slint::PhysicalSize::new(1040, 840));
+    let virt_items = make_items();
+    virt.set_history_virtualized(true);
+    virt.set_history_count(80);
+    virt.set_history_content_height(layout.total_content_h.max(view_h));
+
+    let max_scroll = (layout.total_content_h - view_h).max(0.0);
+    for scroll_y in [0.0f32, 1400.0, max_scroll] {
+        full.set_history_viewport_y(-scroll_y);
+        virt.set_history_viewport_y(-scroll_y);
+
+        let win = compute_virtual_window(&layout, scroll_y, view_h, VIRTUAL_CUSHION_PX)
+            .expect("virtual window must exist");
+        let slice = virt_items[win.first_idx..=win.last_idx].to_vec();
+        virt.set_top_spacer_height(win.top_spacer);
+        virt.set_bottom_spacer_height(win.bottom_spacer);
+        virt.set_visible_history_items(ModelRc::from(Rc::new(VecModel::from(slice))));
+
+        let full_cards: Vec<(f32, f32)> = ElementHandle::find_by_element_type_name(&full, "HistoryCard")
+            .map(|c| (c.absolute_position().y, c.size().height))
+            .collect();
+        let virt_cards: Vec<(f32, f32)> = ElementHandle::find_by_element_type_name(&virt, "HistoryCard")
+            .map(|c| (c.absolute_position().y, c.size().height))
+            .collect();
+
+        // Virtualized DOM holds far fewer HistoryCard widgets than 80.
+        assert!(
+            virt_cards.len() <= 24,
+            "at scroll={scroll_y}: virtualized mode must render <= 24 cards, rendered {}",
+            virt_cards.len()
+        );
+        // Every visible card in full_cards inside the viewport must appear at the matching Y in virt_cards.
+        let container = find_one(&full, "StudioWindow::history-container");
+        let ctop = container.absolute_position().y;
+        let cbot = ctop + container.size().height;
+        let visible_full: Vec<_> = full_cards
+            .iter()
+            .filter(|(y, h)| *y + *h >= ctop + 1.0 && *y <= cbot - 1.0)
+            .copied()
+            .collect();
+        assert!(!visible_full.is_empty(), "expected visible cards at scroll={scroll_y}");
+        for (fy, fh) in visible_full {
+            let found_match = virt_cards
+                .iter()
+                .any(|(vy, vh)| (vy - fy).abs() <= 2.0 && (vh - fh).abs() <= 1.0);
+            assert!(
+                found_match,
+                "at scroll={scroll_y}: full card at y={fy:.1} h={fh:.1} missing or shifted in virtualized view ({virt_cards:?})"
+            );
+        }
+    }
+}
+
+#[test]
+fn test_providers_scrollbar_inside_container_when_scrollable() {
+    let s = studio();
+    s.window().set_size(slint::PhysicalSize::new(760, 600));
+    s.set_active_tab(1);
+    s.set_providers_content_height(1600.0);
+    s.set_providers_can_scroll(true);
+    s.set_providers_scroll_progress(0.5);
+
+    let track = find_one(&s, "StudioWindow::providers-scrollbar-track");
+    let thumb = find_one(&s, "StudioWindow::providers-scrollbar-thumb");
+    let t_pos = track.absolute_position();
+    let t_size = track.size();
+    let th_pos = thumb.absolute_position();
+    let th_size = thumb.size();
+
+    assert!(th_size.height >= 28.0 - 1.0, "providers thumb respects minimum height");
+    assert!(
+        th_pos.y >= t_pos.y - 1.0 && th_pos.y + th_size.height <= t_pos.y + t_size.height + 1.0,
+        "providers thumb must stay inside track"
+    );
+}

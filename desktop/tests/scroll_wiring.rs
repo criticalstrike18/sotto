@@ -598,3 +598,39 @@ fn test_bottom_card_fully_visible_at_extreme_aspect_ratios() {
         );
     }
 }
+
+#[test]
+fn test_scroll_performance_and_memory_wiring_contracts() {
+    let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let hud = std::fs::read_to_string(manifest_dir.join("ui/hud.slint")).expect("read hud.slint");
+    let main_rs = std::fs::read_to_string(manifest_dir.join("src/main.rs")).expect("read main.rs");
+    let app_icon_rs = std::fs::read_to_string(manifest_dir.join("src/app_icon.rs")).expect("read app_icon.rs");
+
+    // 1. Virtualized history list + duplicate DOM removed + Providers scrollbar wired.
+    assert!(!hud.contains("measure-total-h"), "Duplicate offscreen measurement DOM must stay removed");
+    assert!(hud.contains("history-virtualized"), "Virtualization toggle missing from hud.slint");
+    assert!(hud.contains("providers-scrollbar-track"), "Providers scrollbar missing from hud.slint");
+    assert!(hud.contains("providers-drag-scroll"), "Providers drag scroll callback missing from hud.slint");
+
+    // 2. Event-driven timers, WM_GESTURE handle fix, Studio teardown on X, non-blocking hydration.
+    assert!(main_rs.contains("any_studio_scroller_animating"), "Scroll timer must auto-stop when idle");
+    assert!(main_rs.contains("should_anim_timer_run"), "Pill anim timer must auto-stop when static idle");
+    assert!(main_rs.contains("GetGestureInfo(lparam as _"), "WM_GESTURE must decode HGESTUREINFO from lparam");
+    assert!(main_rs.contains("CloseGestureInfoHandle(lparam as _"), "WM_GESTURE must close lparam gesture handle");
+    assert!(main_rs.contains("ptsLocation"), "WM_GESTURE pan must read ptsLocation coordinates");
+    assert!(main_rs.contains("drop_studio_instance"), "Studio close must drop instance and release caches");
+    assert!(
+        main_rs.contains("hydrate_studio_history_nonblocking(studio, history_queue.db(), 500)"),
+        "Initial Studio history load must use non-blocking 500-item hydration"
+    );
+    assert!(
+        main_rs.contains("hydrate_studio_history_nonblocking(s, history_queue.db(), 500)"),
+        "Reopened Studio history load must use non-blocking 500-item hydration"
+    );
+
+    // 3. Bounded + non-blocking + deduplicated app icon cache.
+    assert!(app_icon_rs.contains("MAX_ICON_CACHE_ENTRIES"), "Icon cache must enforce an upper bound");
+    assert!(app_icon_rs.contains("try_get_cached_app_icon"), "Non-blocking icon cache lookup missing");
+    assert!(app_icon_rs.contains("prewarm_app_icon"), "Background icon prewarm helper missing");
+    assert!(app_icon_rs.contains("clear_ui_icon_cache"), "UI icon cache cleanup missing");
+}

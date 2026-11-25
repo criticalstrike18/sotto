@@ -377,3 +377,257 @@ thread_local! {
     pub static PROVIDERS_SCROLLER: RefCell<SmoothScrollEngine> = RefCell::new(SmoothScrollEngine::new());
     pub static CUSTOM_SCROLLER: RefCell<SmoothScrollEngine> = RefCell::new(SmoothScrollEngine::new());
 }
+
+/// Default virtualization buffer rendered above and below the visible viewport.
+pub const VIRTUAL_CUSHION_PX: f32 = 350.0;
+
+/// Minimum hysteresis thresholds before rebuilding the virtualized slice during fast flings.
+pub const REFILL_DISTANCE_PX: f32 = 180.0;
+pub const REFILL_INTERVAL_MS: u64 = 48;
+pub const REFILL_EDGE_GUARD_PX: f32 = 40.0;
+
+/// Precomputed offsets, heights, and total content height for virtualized history cards.
+#[derive(Debug, Clone, Default)]
+pub struct HistoryLayout {
+    pub offsets: Vec<f32>,
+    pub heights: Vec<f32>,
+    pub cards_total_h: f32,
+    pub total_content_h: f32,
+}
+
+/// Active slice indices and spacer heights calibrated for Slint `VerticalLayout`
+/// with `spacing: ROW_SPACING`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct VirtualWindow {
+    pub first_idx: usize,
+    pub last_idx: usize,
+    pub top_spacer: f32,
+    pub bottom_spacer: f32,
+}
+
+/// Computes card offsets, individual estimated heights, and total scrollable height.
+pub fn compute_history_layout<'a>(
+    transcripts: impl IntoIterator<Item = &'a str>,
+    chars_per_line: usize,
+) -> HistoryLayout {
+    let mut offsets = Vec::new();
+    let mut heights = Vec::new();
+    let mut acc = 0.0f32;
+    for t in transcripts {
+        offsets.push(acc);
+        let h = estimate_card_height(t, chars_per_line);
+        heights.push(h);
+        acc += h + ROW_SPACING;
+    }
+    if heights.is_empty() {
+        return HistoryLayout::default();
+    }
+    let cards_total_h = (acc - ROW_SPACING).max(0.0);
+    let total_content_h = cards_total_h + LIST_BOTTOM_PADDING + LIST_OVERSCROLL_PX;
+    HistoryLayout {
+        offsets,
+        heights,
+        cards_total_h,
+        total_content_h,
+    }
+}
+
+/// Computes the visible item slice `[first_idx..=last_idx]` and exact spacer heights
+/// for `scroll_offset_y >= 0.0` (`-viewport_y`).
+///
+/// When `first_idx > 0`, `hud.slint` renders the top spacer before card `first_idx`
+/// inside a `VerticalLayout` with `spacing: ROW_SPACING`, so `top_spacer` subtracts
+/// `ROW_SPACING` to place card `first_idx` at `offsets[first_idx]` exactly.
+/// When `first_idx == 0`, `top_spacer` is `0.0` and the spacer element is omitted.
+/// `bottom_spacer` applies the symmetric `ROW_SPACING` adjustment before the tail.
+pub fn compute_virtual_window(
+    layout: &HistoryLayout,
+    scroll_offset_y: f32,
+    visible_h: f32,
+    cushion_px: f32,
+) -> Option<VirtualWindow> {
+    let n = layout.heights.len();
+    if n == 0 {
+        return None;
+    }
+    let view_top = scroll_offset_y.max(0.0);
+    let view_min = (view_top - cushion_px).max(0.0);
+    let view_max = view_top + visible_h.max(MIN_VISIBLE_PX) + cushion_px;
+
+    let first_idx = layout
+        .offsets
+        .iter()
+        .zip(layout.heights.iter())
+        .position(|(&off, &h)| off + h >= view_min)
+        .unwrap_or(n - 1);
+
+    let last_idx = layout
+        .offsets
+        .iter()
+        .rposition(|&off| off <= view_max)
+        .unwrap_or(n - 1)
+        .max(first_idx)
+        .min(n - 1);
+
+    let top_spacer = if first_idx > 0 {
+        (layout.offsets[first_idx] - ROW_SPACING).max(0.0)
+    } else {
+        0.0
+    };
+
+    let slice_end = layout.offsets[last_idx] + layout.heights[last_idx];
+    let bottom_spacer = if last_idx + 1 < n {
+        (layout.cards_total_h - slice_end - ROW_SPACING).max(0.0)
+    } else {
+        0.0
+    };
+
+    Some(VirtualWindow {
+        first_idx,
+        last_idx,
+        top_spacer,
+        bottom_spacer,
+    })
+}
+
+/// Returns `true` when the virtualized slice should be updated for `new_win`.
+/// Skips redundant intermediate Slint `VecModel` rebuilds during rapid flings unless
+/// approaching the cached buffer edge, exceeding travel/time hysteresis, or forced.
+pub fn should_refill_virtual_window(
+    layout: &HistoryLayout,
+    cached: Option<(VirtualWindow, f32, Instant)>,
+    new_win: VirtualWindow,
+    scroll_offset_y: f32,
+    visible_h: f32,
+    now: Instant,
+) -> bool {
+    let Some((prev_win, last_y, last_time)) = cached else {
+        return true;
+    };
+    if (prev_win.first_idx, prev_win.last_idx) == (new_win.first_idx, new_win.last_idx) {
+        return false;
+    }
+    let n = layout.offsets.len();
+    if n == 0 {
+        return true;
+    }
+    let view_top = scroll_offset_y.max(0.0);
+    let view_bottom = view_top + visible_h.max(MIN_VISIBLE_PX);
+    let cached_top = layout.offsets[prev_win.first_idx];
+    let cached_bottom = layout.offsets[prev_win.last_idx] + layout.heights[prev_win.last_idx];
+    let near_edge = (prev_win.first_idx > 0 && view_top < cached_top + REFILL_EDGE_GUARD_PX)
+        || (prev_win.last_idx + 1 < n && view_bottom > cached_bottom - REFILL_EDGE_GUARD_PX);
+    if near_edge {
+        return true;
+    }
+    (scroll_offset_y - last_y).abs() >= REFILL_DISTANCE_PX
+        || now.duration_since(last_time).as_millis() >= REFILL_INTERVAL_MS as u128
+}
+
+/// Returns `true` while any Studio tab scroll physics engine still has pending motion.
+pub fn any_studio_scroller_animating() -> bool {
+    STUDIO_SCROLLER.with(|s| s.borrow().is_animating())
+        || PROVIDERS_SCROLLER.with(|s| s.borrow().is_animating())
+        || CUSTOM_SCROLLER.with(|s| s.borrow().is_animating())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    #[test]
+    fn test_compute_history_layout_and_virtual_window_exact_spacers() {
+        let transcripts: Vec<String> = (0..120)
+            .map(|i| {
+                if i % 4 == 0 {
+                    "Longer dictation entry that wraps across multiple lines inside the Studio history vault card.".repeat(2)
+                } else {
+                    format!("Short dictation #{i}")
+                }
+            })
+            .collect();
+        let layout = compute_history_layout(transcripts.iter().map(|s| s.as_str()), 80);
+        assert_eq!(layout.offsets.len(), 120);
+        assert_eq!(layout.heights.len(), 120);
+
+        for scroll_y in [0.0f32, 420.0, 2500.0, (layout.total_content_h - 600.0).max(0.0)] {
+            let win = compute_virtual_window(&layout, scroll_y, 600.0, VIRTUAL_CUSHION_PX)
+                .expect("window must exist");
+            let rendered_count = win.last_idx - win.first_idx + 1;
+            assert!(
+                rendered_count <= 24,
+                "virtualized slice at scroll={scroll_y} rendered too many cards: {rendered_count}"
+            );
+
+            // Reconstruct the exact rendered VerticalLayout height (cards_total_h):
+            // [top_spacer + ROW_SPACING (if first_idx > 0)] + cards slice + [ROW_SPACING + bottom_spacer (if last_idx < n - 1)]
+            let slice_start = layout.offsets[win.first_idx];
+            let slice_end = layout.offsets[win.last_idx] + layout.heights[win.last_idx];
+            let slice_h = slice_end - slice_start;
+            let top_contrib = if win.first_idx > 0 {
+                win.top_spacer + ROW_SPACING
+            } else {
+                assert_eq!(win.top_spacer, 0.0);
+                0.0
+            };
+            let bottom_contrib = if win.last_idx + 1 < layout.offsets.len() {
+                ROW_SPACING + win.bottom_spacer
+            } else {
+                assert_eq!(win.bottom_spacer, 0.0);
+                0.0
+            };
+            assert!(
+                (top_contrib - slice_start).abs() < 0.01,
+                "card {} Y position mismatch at scroll={scroll_y}: top_contrib={top_contrib}, expected={slice_start}",
+                win.first_idx
+            );
+            assert!(
+                ((top_contrib + slice_h + bottom_contrib) - layout.cards_total_h).abs() < 0.05,
+                "total reconstructed height mismatch at scroll={scroll_y}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_should_refill_virtual_window_hysteresis_and_edge_guard() {
+        let transcripts: Vec<String> = (0..80).map(|i| format!("Row {i}")).collect();
+        let layout = compute_history_layout(transcripts.iter().map(|s| s.as_str()), 80);
+        let t0 = Instant::now();
+        let win0 = compute_virtual_window(&layout, 1200.0, 600.0, VIRTUAL_CUSHION_PX).unwrap();
+        let mut win1 = win0;
+        win1.first_idx += 1;
+        win1.last_idx += 1;
+
+        // Safe inside cushion, small delta and < 48ms -> skip intermediate rebuild.
+        assert!(!should_refill_virtual_window(
+            &layout,
+            Some((win0, 1200.0, t0)),
+            win1,
+            1240.0,
+            600.0,
+            t0 + Duration::from_millis(16),
+        ));
+
+        // Time threshold elapsed (>= 48ms) -> rebuild allowed.
+        assert!(should_refill_virtual_window(
+            &layout,
+            Some((win0, 1200.0, t0)),
+            win1,
+            1240.0,
+            600.0,
+            t0 + Duration::from_millis(50),
+        ));
+
+        // Approaching top edge of cached window (< 40px cushion remaining) -> rebuild immediately!
+        let near_edge_scroll = layout.offsets[win0.first_idx] + 10.0;
+        assert!(should_refill_virtual_window(
+            &layout,
+            Some((win0, near_edge_scroll, t0)),
+            win1,
+            near_edge_scroll,
+            600.0,
+            t0 + Duration::from_millis(5),
+        ));
+    }
+}
