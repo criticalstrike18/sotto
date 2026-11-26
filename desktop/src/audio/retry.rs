@@ -168,6 +168,22 @@ impl AudioSafetyNet {
         }
     }
 
+    /// Drops an expired retry payload (>5 minutes old) if present so stale
+    /// multi-megabyte WAV buffers are reclaimed during idle maintenance.
+    pub fn evict_if_expired(&self) -> bool {
+        self.evict_if_expired_after(300)
+    }
+
+    pub fn evict_if_expired_after(&self, max_age_secs: u64) -> bool {
+        if let Ok(mut lock) = self.cached.lock() {
+            if lock.as_ref().is_some_and(|audio| audio.is_expired(max_age_secs)) {
+                *lock = None;
+                return true;
+            }
+        }
+        false
+    }
+
     /// Returns true if a valid, unexpired audio buffer is ready in RAM for retry
     pub fn has_retryable_audio(&self) -> bool {
         if let Ok(lock) = self.cached.lock() {

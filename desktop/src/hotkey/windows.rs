@@ -1317,12 +1317,6 @@ mod tests {
     }
 
     #[test]
-    fn test_is_key_down_query() {
-        let pressed = is_key_down(0x77); // VK_F8
-        assert!(!pressed || pressed);
-    }
-
-    #[test]
     fn test_format_hotkey_strings() {
         assert_eq!(format_hotkey(0, 0x77), "F8");
         assert_eq!(format_hotkey(0x0002 | 0x0004, 0x20), "Ctrl + Shift + Space");

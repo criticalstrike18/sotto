@@ -1,9 +1,10 @@
 // Copyright (c) 2026 Sotto
 // Post-Processing Layer: Dictionary & Casing Normalization Engine
 
-use regex::{Regex, RegexBuilder};
+use regex::{Captures, Regex, RegexBuilder};
 use serde::{Deserialize, Serialize};
-use std::sync::RwLock;
+use std::borrow::Cow;
+use std::sync::{LazyLock, RwLock};
 
 /// User-customizable dictionary replacement pair.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -79,9 +80,29 @@ struct CompiledRule {
     replacement: String,
 }
 
+static BUILTIN_DICTIONARY: LazyLock<Regex> = LazyLock::new(|| {
+    // Sort longest phrase first so multi-word entries ("visual studio code",
+    // "rest apis", "ui ux") win over embedded single-word rules in one scan.
+    let mut keys: Vec<&'static str> = BUILTIN_TECH_DICTIONARY.iter().map(|(k, _)| *k).collect();
+    keys.sort_by(|a, b| b.len().cmp(&a.len()).then_with(|| a.cmp(b)));
+    let escaped: Vec<String> = keys.into_iter().map(regex::escape).collect();
+    let pat = format!(r"(?i)\b(?:{})\b", escaped.join("|"));
+    RegexBuilder::new(&pat)
+        .build()
+        .expect("builtin dictionary regex must compile")
+});
+
+#[inline]
+fn lookup_builtin_replacement(matched: &str) -> &'static str {
+    BUILTIN_TECH_DICTIONARY
+        .iter()
+        .find(|(k, _)| k.eq_ignore_ascii_case(matched))
+        .map(|(_, v)| *v)
+        .unwrap_or("")
+}
+
 /// High-performance Dictionary Engine with compiled word-boundary matching.
 pub struct DictionaryEngine {
-    compiled_builtin: Vec<CompiledRule>,
     custom_rules: RwLock<Vec<CompiledRule>>,
 }
 
@@ -92,21 +113,10 @@ impl Default for DictionaryEngine {
 }
 
 impl DictionaryEngine {
-    /// Creates a new DictionaryEngine with built-in technical rules and optional custom entries.
+    /// Creates a new DictionaryEngine sharing the process-wide built-in rules
+    /// and optional user custom entries.
     pub fn new(custom_entries: &[DictionaryEntry]) -> Self {
-        let compiled_builtin = BUILTIN_TECH_DICTIONARY
-            .iter()
-            .filter_map(|(from, to)| {
-                let pat = format!(r"(?i)\b{}\b", regex::escape(from));
-                RegexBuilder::new(&pat).build().ok().map(|pattern| CompiledRule {
-                    pattern,
-                    replacement: to.to_string(),
-                })
-            })
-            .collect();
-
         let engine = Self {
-            compiled_builtin,
             custom_rules: RwLock::new(Vec::new()),
         };
 
@@ -142,25 +152,25 @@ impl DictionaryEngine {
             return text.to_string();
         }
 
-        let mut working = text.to_string();
+        let mut working: Cow<'_, str> = Cow::Borrowed(text);
 
         // 1. Apply user custom entries first (higher priority)
         if let Ok(custom) = self.custom_rules.read() {
             for rule in custom.iter() {
-                if rule.pattern.is_match(&working) {
-                    working = rule.pattern.replace_all(&working, rule.replacement.as_str()).into_owned();
+                if let Cow::Owned(next) = rule.pattern.replace_all(&working, rule.replacement.as_str()) {
+                    working = Cow::Owned(next);
                 }
             }
         }
 
-        // 2. Apply built-in technical vocabulary
-        for rule in &self.compiled_builtin {
-            if rule.pattern.is_match(&working) {
-                working = rule.pattern.replace_all(&working, rule.replacement.as_str()).into_owned();
-            }
+        // 2. Apply built-in technical vocabulary in a single O(n) pass
+        match BUILTIN_DICTIONARY.replace_all(&working, |caps: &Captures<'_>| {
+            let m = caps.get(0).map(|m| m.as_str()).unwrap_or("");
+            lookup_builtin_replacement(m)
+        }) {
+            Cow::Borrowed(_) => working.into_owned(),
+            Cow::Owned(updated) => updated,
         }
-
-        working
     }
 }
 
@@ -204,5 +214,27 @@ mod tests {
             output,
             "GitHub and GitHub and GITHUBLIKE should not replace githublike"
         );
+    }
+
+    #[test]
+    fn test_multi_word_priority_all_builtin_rules_and_dynamic_reload() {
+        let engine = DictionaryEngine::default();
+        // Verify multi-word rules take precedence over embedded shorter words and empty fast-path works.
+        assert_eq!(engine.apply("   "), "   ");
+        assert_eq!(
+            engine.apply("using visual studio code with ui ux for rest apis and rest api on git hub via next js and node js"),
+            "using VS Code with UI/UX for REST APIs and REST API on GitHub via Next.js and Node.js"
+        );
+
+        // Every built-in dictionary entry resolves to its canonical spelling.
+        for &(raw, expected) in BUILTIN_TECH_DICTIONARY {
+            assert_eq!(engine.apply(raw), expected, "failed for builtin key {raw:?}");
+        }
+
+        // Dynamic custom dictionary reload replaces old custom rules cleanly.
+        engine.set_custom_entries(&[DictionaryEntry::new("acme", "ACME Corp")]);
+        assert_eq!(engine.apply("deploy acme to docker"), "deploy ACME Corp to Docker");
+        engine.set_custom_entries(&[]);
+        assert_eq!(engine.apply("deploy acme to docker"), "deploy acme to Docker");
     }
 }

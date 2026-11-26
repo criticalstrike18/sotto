@@ -30,6 +30,7 @@ pub mod components {
     component_module!(history_card_mod, "history_card.rs", HistoryCard);
 }
 
+pub mod app_logic;
 pub mod audio;
 pub mod media;
 pub mod long_form;

@@ -3,7 +3,6 @@
 // Transcription uses inline WAV data; keys are stored in the SQLite provider
 // store (db::providers) and never committed to the repo.
 
-use std::sync::Arc;
 use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 
@@ -53,7 +52,7 @@ use super::key_pool::{mask_key, KeyPool};
 
 #[derive(Clone)]
 pub struct GeminiClient {
-    client: Arc<reqwest::Client>,
+    client: &'static reqwest::Client,
     key_pool: KeyPool,
     model: String,
     language: String,
@@ -71,16 +70,10 @@ impl GeminiClient {
 
     /// Creates a new GeminiClient with a pool of keys for automated rotation.
     pub fn with_keys(keys: Vec<String>) -> Result<Self, String> {
-        let client = reqwest::Client::builder()
-            .tcp_nodelay(true)
-            .pool_idle_timeout(Some(Duration::from_secs(120)))
-            .pool_max_idle_per_host(8)
-            .timeout(Duration::from_secs(30))
-            .build()
-            .map_err(|e| format!("Failed to build reqwest HTTP/2 client: {}", e))?;
+        let client = super::shared_http_client()?;
 
         Ok(Self {
-            client: Arc::new(client),
+            client,
             key_pool: KeyPool::new(keys),
             model: DEFAULT_GEMINI_MODEL.to_string(),
             language: "en".to_string(),
@@ -139,11 +132,8 @@ impl GeminiClient {
         })
     }
 
-    fn runtime() -> Result<tokio::runtime::Runtime, String> {
-        tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .map_err(|e| format!("Failed to create tokio runtime: {}", e))
+    fn runtime() -> Result<&'static tokio::runtime::Runtime, String> {
+        super::shared_runtime()
     }
 
     /// Validates the key with a cheap models-list call. Ok(model_count) on success.
@@ -170,6 +160,7 @@ impl GeminiClient {
             .get(GEMINI_LIST_ENDPOINT)
             .header("x-goog-api-key", key.as_str())
             .query(&[("pageSize", "100")])
+            .timeout(Duration::from_secs(30))
             .send()
             .await
             .map_err(|e| format!("Gemini models request failed: {}", e))?;
@@ -266,6 +257,7 @@ impl GeminiClient {
                 .post(generate_endpoint(&self.model))
                 .header("x-goog-api-key", key.as_str())
                 .json(&payload)
+                .timeout(Duration::from_secs(30))
                 .send()
                 .await;
 
@@ -372,6 +364,7 @@ impl GeminiClient {
             .post(generate_endpoint(model))
             .header("x-goog-api-key", key.as_str())
             .json(&payload)
+            .timeout(Duration::from_secs(30))
             .send()
             .await
             .map_err(|e| format!("Gemini LLM HTTP request failed: {}", e))?;

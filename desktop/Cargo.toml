@@ -23,22 +23,40 @@ serde = { version = "1.0", default-features = false, features = ["derive", "allo
 serde_json = "1.0"
 rusqlite = { version = "0.32", features = ["bundled"] }
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
-regex = "1.11"
+regex = { version = "1.11", default-features = false, features = ["std", "perf", "unicode-case", "unicode-perl"] }
 
 [target.'cfg(not(target_os = "windows"))'.dependencies]
-slint = { version = "1.9", features = ["raw-window-handle-06"] }
+slint = { version = "1.9", default-features = false, features = [
+    "std",
+    "backend-winit",
+    "renderer-femtovg",
+    "renderer-software",
+    "accessibility",
+    "compat-1-2",
+    "raw-window-handle-06",
+] }
 
-[target.'cfg(target_os = "windows")'.dependencies]
+[target.'cfg(all(target_os = "windows", target_env = "msvc"))'.dependencies]
 # Trial Skia (OpenGL surface for DWM transparent pill) + DirectWrite on Windows CI without changing Linux/macOS builds.
 slint = { version = "1.9", default-features = false, features = [
     "std",
     "backend-winit",
-    "renderer-skia",
     "renderer-skia-opengl",
     "renderer-software",
     "accessibility",
     "compat-1-2",
-    "system-tray",
+    "raw-window-handle-06",
+] }
+
+[target.'cfg(all(target_os = "windows", not(target_env = "msvc")))'.dependencies]
+# Local GNU toolchains cannot link prebuilt Skia MSVC binaries; fall back to FemtoVG + Software locally.
+slint = { version = "1.9", default-features = false, features = [
+    "std",
+    "backend-winit",
+    "renderer-femtovg",
+    "renderer-software",
+    "accessibility",
+    "compat-1-2",
     "raw-window-handle-06",
 ] }
 windows-sys = { version = "0.60", features = [
@@ -78,8 +96,8 @@ debug = 1
 debug = 1
 
 [profile.release]
-opt-level = 3
-lto = "thin"
-codegen-units = 16
+opt-level = "s"
+lto = "fat"
+codegen-units = 1
 panic = "abort"
 strip = true

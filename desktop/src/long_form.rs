@@ -319,12 +319,23 @@ fn run_worker(rx: Receiver<PreparedChunk>, transcriber: Transcriber) -> WorkerOu
         }
 
         let prompt = {
-            let resolved = chunker::stitch_transcripts(outcome.segments.iter().filter_map(
-                |segment| match segment {
-                    RetrySegment::Text(text) => Some(text.as_str()),
-                    RetrySegment::Audio { .. } => None,
-                },
-            ));
+            // Only enough trailing text segments to cover PROMPT_TAIL_CHARS + word boundary.
+            let mut tail_parts: Vec<&str> = Vec::new();
+            let mut tail_chars = 0usize;
+            for segment in outcome.segments.iter().rev() {
+                if let RetrySegment::Text(text) = segment {
+                    let trimmed_len = text.trim().chars().count();
+                    if trimmed_len > 0 {
+                        tail_chars += trimmed_len + 1;
+                        tail_parts.push(text.as_str());
+                        if tail_chars > chunker::PROMPT_TAIL_CHARS + 64 {
+                            break;
+                        }
+                    }
+                }
+            }
+            tail_parts.reverse();
+            let resolved = chunker::stitch_transcripts(tail_parts);
             chunker::continuation_prompt(&resolved)
         };
         let prompt_opt = (!prompt.is_empty()).then_some(prompt.as_str());

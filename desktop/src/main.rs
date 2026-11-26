@@ -2,9 +2,10 @@
 // Copyright (c) 2026 Sotto
 // Studio & Voice Pill Architecture matching whisper-flow-designs/interactive-preview.html
 
-slint::include_modules!();
-
-use sotto_desktop::{app_icon, audio, config, db, hotkey, inject, media, router, startup, tray};
+use sotto_desktop::{
+    app_icon, app_logic, audio, config, db, hotkey, inject, media, router, startup, tray,
+    ApiKeyItem, FloatingPillWindow, HistoryItem, LanguageItem, StudioWindow,
+};
 use sotto_desktop::db::{AsyncHistoryQueue, get_process_info_for_hwnd};
 
 use slint::{ComponentHandle, Model, ModelRc, VecModel};
@@ -620,17 +621,9 @@ fn reset_pill_to_idle(pill_weak: slint::Weak<FloatingPillWindow>) {
     });
 }
 
-/// High-performance multi-threaded Tokio runtime for background AI LLM post-processing.
-static SHARED_TOKIO: std::sync::OnceLock<tokio::runtime::Runtime> = std::sync::OnceLock::new();
-
+/// Shared single-worker Tokio runtime for background AI LLM post-processing & transcription.
 pub fn shared_tokio() -> &'static tokio::runtime::Runtime {
-    SHARED_TOKIO.get_or_init(|| {
-        tokio::runtime::Builder::new_multi_thread()
-            .worker_threads(2)
-            .enable_all()
-            .build()
-            .expect("Failed to initialize background Tokio runtime")
-    })
+    router::shared_runtime().expect("Failed to initialize shared Tokio runtime")
 }
 
 #[cfg(target_os = "windows")]
@@ -1232,20 +1225,13 @@ fn sync_provider_ui(
     let gemini_idx = gemini_models.iter().position(|m| m == &gemini_model).unwrap_or(0) as i32;
 
     let cfg = config::AppConfig::load();
-    let current_lang = cfg.transcription_language.clone();
     let active_model = if active == router::PROVIDER_GEMINI {
         &gemini_model
     } else {
         &groq_model
     };
-    let is_en_only = router::is_english_only_model(active_model);
-    let effective_lang = if is_en_only { "en".to_string() } else { current_lang };
-
-    let display_lang = if effective_lang == "en" || effective_lang == "auto" {
-        "More Languages".to_string()
-    } else {
-        format!("{} ({})", router::language_display_name(&effective_lang), effective_lang)
-    };
+    let (effective_lang, display_lang, supports_multi) =
+        app_logic::normalize_language_for_model(&cfg.transcription_language, active_model);
 
     let mid = router::OTHER_LANGUAGES.len() / 2;
     let col1_model = language_items_model(&router::OTHER_LANGUAGES[..mid]);
@@ -1262,7 +1248,7 @@ fn sync_provider_ui(
         s.set_provider_chip_text(chip.clone().into());
 
         s.set_transcription_language(effective_lang.into());
-        s.set_model_supports_multilingual(!is_en_only);
+        s.set_model_supports_multilingual(supports_multi);
         s.set_selected_other_language_display(display_lang.into());
         s.set_other_languages_col1(col1_model);
         s.set_other_languages_col2(col2_model);
@@ -2328,15 +2314,7 @@ fn wire_studio_window(
         #[cfg(target_os = "windows")]
         cancel_recording();
         let mut cfg = config::AppConfig::load();
-        if slot == 1 {
-            cfg.secondary_trigger = None;
-        } else if slot == 2 {
-            cfg.primary_cancel_trigger = Some(hotkey::TriggerBinding::escape());
-        } else if slot == 3 {
-            cfg.secondary_cancel_trigger = None;
-        } else {
-            cfg.primary_trigger = hotkey::TriggerBinding::f8();
-        }
+        let (displays, status_msg) = app_logic::apply_reset_trigger_slot(slot, &mut cfg);
         let _ = cfg.save();
         if let Ok(guard) = GLOBAL_HOTKEY_MGR.lock() {
             if let Some(ref mgr) = *guard {
@@ -2348,39 +2326,18 @@ fn wire_studio_window(
                 );
             }
         }
-        let primary_disp = cfg.primary_trigger.display();
-        let secondary_disp = cfg
-            .secondary_trigger
-            .as_ref()
-            .map(|b| b.display())
-            .unwrap_or_else(|| "Not set".to_string());
-        let cancel_primary_disp = cfg
-            .primary_cancel_trigger
-            .as_ref()
-            .map(|b| b.display())
-            .unwrap_or_else(|| "Not set".to_string());
-        let cancel_secondary_disp = cfg
-            .secondary_cancel_trigger
-            .as_ref()
-            .map(|b| b.display())
-            .unwrap_or_else(|| "Not set".to_string());
         if let Some(studio) = s_weak_reset.upgrade() {
             studio.set_is_recording_key(false);
             studio.set_recording_slot(-1);
-            studio.set_trigger_primary_display(primary_disp.clone().into());
-            studio.set_trigger_secondary_display(secondary_disp.into());
-            studio.set_cancel_primary_display(cancel_primary_disp.clone().into());
-            studio.set_cancel_secondary_display(cancel_secondary_disp.into());
+            studio.set_trigger_primary_display(displays.primary.into());
+            studio.set_trigger_secondary_display(displays.secondary.into());
+            studio.set_cancel_primary_display(displays.cancel_primary.into());
+            studio.set_cancel_secondary_display(displays.cancel_secondary.into());
             println!("[Studio] Trigger slot {} reset", slot);
             let _ = std::io::stdout().flush();
         }
         #[cfg(target_os = "windows")]
-        set_trigger_status(match slot {
-            1 => "Secondary trigger cleared".to_string(),
-            2 => format!("Primary Cancel reset to {}", cancel_primary_disp),
-            3 => "Secondary Cancel cleared".to_string(),
-            _ => format!("Primary trigger reset to {}", primary_disp),
-        });
+        set_trigger_status(status_msg);
     });
 
     let s_weak_startup = s_weak.clone();
@@ -2665,15 +2622,11 @@ fn wire_studio_window(
             } else {
                 model_at(&s.get_groq_models(), s.get_groq_model_index(), router::DEFAULT_GROQ_MODEL)
             };
-            let is_en_only = router::is_english_only_model(&active_model);
-            let final_lang = if is_en_only { "en".to_string() } else { lang };
+            let (final_lang, display, supports_multi) =
+                app_logic::normalize_language_for_model(&lang, &active_model);
+            s.set_model_supports_multilingual(supports_multi);
             s.set_transcription_language(final_lang.clone().into());
             s.set_language_dropdown_open(false);
-            let display = if final_lang == "en" || final_lang == "auto" {
-                "More Languages".to_string()
-            } else {
-                format!("{} ({})", router::language_display_name(&final_lang), final_lang)
-            };
             s.set_selected_other_language_display(display.into());
 
             // Live hot swap transcriber language
@@ -2770,19 +2723,21 @@ fn wire_studio_window(
     let s_weak_pp_toggle = s_weak.clone();
     studio.on_toggle_post_process_llm(move || {
         if let Some(s) = s_weak_pp_toggle.upgrade() {
-            let cur = s.get_post_process_llm_enabled();
-            let next = !cur;
+            let next = !s.get_post_process_llm_enabled();
             s.set_post_process_llm_enabled(next);
 
             let mut cfg = config::AppConfig::load();
-            cfg.post_process_llm_enabled = next;
-            if let Err(e) = cfg.save() {
-                eprintln!("[Config Error] Failed to persist post_process_llm_enabled: {}", e);
-            }
             if let Ok(guard) = GLOBAL_POST_PROCESSOR.lock() {
                 if let Some(ref p) = *guard {
-                    p.update_options(cfg.to_post_process_options());
+                    app_logic::apply_post_process_toggle(&mut cfg, p, next);
+                } else {
+                    cfg.post_process_llm_enabled = next;
                 }
+            } else {
+                cfg.post_process_llm_enabled = next;
+            }
+            if let Err(e) = cfg.save() {
+                eprintln!("[Config Error] Failed to persist post_process_llm_enabled: {}", e);
             }
             println!("[PostProcess LLM] Toggle changed to: {}", next);
             wake_scroll_driver();
@@ -2796,21 +2751,14 @@ fn wire_studio_window(
             s.set_post_process_llm_provider(provider.clone().into());
 
             let mut cfg = config::AppConfig::load();
-            cfg.post_process_llm_provider = provider.clone();
-            if provider == "groq" && !cfg.post_process_llm_model.starts_with("qwen") && !cfg.post_process_llm_model.starts_with("openai") {
-                cfg.post_process_llm_model = "qwen/qwen3.8-27b".to_string();
-                s.set_post_process_llm_model(cfg.post_process_llm_model.clone().into());
-            } else if provider == "gemini" && !cfg.post_process_llm_model.starts_with("gemini") {
-                cfg.post_process_llm_model = "gemini-2.5-flash".to_string();
-                s.set_post_process_llm_model(cfg.post_process_llm_model.clone().into());
+            if let Ok(guard) = GLOBAL_POST_PROCESSOR.lock() {
+                if let Some(ref p) = *guard {
+                    let model = app_logic::apply_post_process_provider(&mut cfg, p, &provider);
+                    s.set_post_process_llm_model(model.into());
+                }
             }
             if let Err(e) = cfg.save() {
                 eprintln!("[Config Error] Failed to persist post_process_llm_provider: {}", e);
-            }
-            if let Ok(guard) = GLOBAL_POST_PROCESSOR.lock() {
-                if let Some(ref p) = *guard {
-                    p.update_options(cfg.to_post_process_options());
-                }
             }
             println!("[PostProcess LLM] Provider set to: {}, model: {}", provider, cfg.post_process_llm_model);
         }
@@ -2823,14 +2771,15 @@ fn wire_studio_window(
             s.set_post_process_llm_model(model_str.clone().into());
 
             let mut cfg = config::AppConfig::load();
-            cfg.post_process_llm_model = model_str.clone();
-            if let Err(e) = cfg.save() {
-                eprintln!("[Config Error] Failed to persist post_process_llm_model: {}", e);
-            }
             if let Ok(guard) = GLOBAL_POST_PROCESSOR.lock() {
                 if let Some(ref p) = *guard {
-                    p.update_options(cfg.to_post_process_options());
+                    app_logic::apply_post_process_model(&mut cfg, p, &model_str);
+                } else {
+                    cfg.post_process_llm_model = model_str.clone();
                 }
+            }
+            if let Err(e) = cfg.save() {
+                eprintln!("[Config Error] Failed to persist post_process_llm_model: {}", e);
             }
             println!("[PostProcess LLM] Model set to: {}", model_str);
         }
@@ -2842,14 +2791,15 @@ fn wire_studio_window(
             s.set_post_process_style(style);
 
             let mut cfg = config::AppConfig::load();
-            cfg.post_process_style = style;
-            if let Err(e) = cfg.save() {
-                eprintln!("[Config Error] Failed to persist post_process_style: {}", e);
-            }
             if let Ok(guard) = GLOBAL_POST_PROCESSOR.lock() {
                 if let Some(ref p) = *guard {
-                    p.update_options(cfg.to_post_process_options());
+                    app_logic::apply_post_process_style(&mut cfg, p, style);
+                } else {
+                    cfg.post_process_style = style;
                 }
+            }
+            if let Err(e) = cfg.save() {
+                eprintln!("[Config Error] Failed to persist post_process_style: {}", e);
             }
             println!("[PostProcess LLM] Style set to: {}", style);
         }
@@ -2862,16 +2812,19 @@ fn wire_studio_window(
     studio.on_save_customization(move || {
         if let (Some(studio), Some(pill)) = (s_weak_save.upgrade(), p_weak_save.upgrade()) {
             let mut cfg = config::AppConfig::load();
-            cfg.opt_idle = studio.get_opt_idle();
-            cfg.opt_listening = studio.get_opt_listening();
-            cfg.opt_transcribe = studio.get_opt_transcribe();
-            cfg.opt_success = studio.get_opt_success();
-            cfg.opt_error = studio.get_opt_error();
-            cfg.surface_opacity = studio.get_surface_opacity();
-            cfg.trigger_mode = studio.get_trigger_mode();
-            cfg.capture_mode = config::CaptureMode::from_i32(studio.get_capture_mode());
-            cfg.chimes_enabled = studio.get_chimes_enabled();
-            cfg.media_pause_enabled = studio.get_media_pause_enabled();
+            let snap = app_logic::CustomizationSnapshot {
+                opt_idle: studio.get_opt_idle(),
+                opt_listening: studio.get_opt_listening(),
+                opt_transcribe: studio.get_opt_transcribe(),
+                opt_success: studio.get_opt_success(),
+                opt_error: studio.get_opt_error(),
+                surface_opacity: studio.get_surface_opacity(),
+                trigger_mode: studio.get_trigger_mode(),
+                capture_mode: config::CaptureMode::from_i32(studio.get_capture_mode()),
+                chimes_enabled: studio.get_chimes_enabled(),
+                media_pause_enabled: studio.get_media_pause_enabled(),
+            };
+            snap.apply_to(&mut cfg);
             audio::chime::set_enabled(cfg.chimes_enabled);
             media::set_enabled(cfg.media_pause_enabled);
 
@@ -5321,21 +5274,17 @@ fn load_or_create_ipc_token() -> String {
 
         Arc::new(move || {
             let current = est.load(Ordering::SeqCst);
-            match current {
-                0 => {
-                    // Idle -> Start dictation
+            match app_logic::decide_pill_click_action(current, safety.has_retryable_audio()) {
+                app_logic::PillClickAction::StartListening => {
                     start_dictation(&p_w, &est, &rstart, &thwnd, &inact, &dict_gen_cycle);
                 }
-                1 => {
-                    // Listening -> Stop dictation & transcribe
+                app_logic::PillClickAction::StopListening => {
                     stop_dictation(&p_w, &transcriber_c, &est, &rstart, &thwnd, &inact, &hq, &safety, &post_proc, &dict_gen_cycle);
                 }
-                2 => {
-                    // Transcribing -> Click is ignored to prevent UI corruption while processing
+                app_logic::PillClickAction::IgnoreTranscribing => {
                     println!("[State Transition] Click ignored: currently transcribing...");
                 }
-                3 => {
-                    // Success -> Immediately dismiss back to Idle
+                app_logic::PillClickAction::DismissSuccess => {
                     inact.record_activity();
                     est.store(0, Ordering::SeqCst);
                     if let Some(p) = p_w.upgrade() {
@@ -5343,27 +5292,24 @@ fn load_or_create_ipc_token() -> String {
                         p.set_timer_sec(0);
                         p.set_timer_text("0:00".into());
                     }
-// Studio preview isolated
                     println!("[State Transition] Clicked during Success: reset to Idle");
                 }
-                4 => {
-                    // Error -> RETRY transcription with cached audio buffer (Step 2.2)
+                app_logic::PillClickAction::RetryAudio => {
                     inact.record_activity();
                     println!("[HUD Pill] Clicked during Error: executing Audio Safety Net retry");
-                    let retried = retry_dictation(&p_w, &safety, &transcriber_c, &est, &inact, &hq, &post_proc);
-                    if !retried {
-                        // If no audio available or expired, reset to Idle
-                        est.store(0, Ordering::SeqCst);
-                        if let Some(p) = p_w.upgrade() {
-                            p.set_active_state(0);
-                            p.set_timer_sec(0);
-                            p.set_timer_text("0:00".into());
-                        }
-// Studio preview isolated
-                        println!("[State Transition] No cached audio to retry: reset to Idle");
-                    }
+                    let _ = retry_dictation(&p_w, &safety, &transcriber_c, &est, &inact, &hq, &post_proc);
                 }
-                _ => {}
+                app_logic::PillClickAction::ResetErrorToIdle => {
+                    inact.record_activity();
+                    est.store(0, Ordering::SeqCst);
+                    if let Some(p) = p_w.upgrade() {
+                        p.set_active_state(0);
+                        p.set_timer_sec(0);
+                        p.set_timer_text("0:00".into());
+                    }
+                    println!("[State Transition] No cached audio to retry: reset to Idle");
+                }
+                app_logic::PillClickAction::IgnoreUnknown => {}
             }
         })
     };
@@ -5980,6 +5926,8 @@ fn load_or_create_ipc_token() -> String {
     // avoiding soft page fault latency penalties between consecutive sentences.
     let inactivity_timer = inactivity.clone();
     let engine_state_trim = Arc::clone(&engine_state);
+    let safety_trim = Arc::clone(&safety_net);
+    let hq_trim = Arc::clone(&history_queue);
     let conservative_timer = slint::Timer::default();
     conservative_timer.start(
         slint::TimerMode::Repeated,
@@ -5987,8 +5935,13 @@ fn load_or_create_ipc_token() -> String {
         move || {
             // Only trim if currently in Idle state (state 0)
             if engine_state_trim.load(Ordering::SeqCst) == 0 {
-                if inactivity_timer.check_and_trim(Duration::from_secs(45)) {
-                    println!("[Memory Optimizer] 45s of complete inactivity reached -> applied conservative working set trim");
+                let evicted_audio = safety_trim.evict_if_expired();
+                if inactivity_timer.check_and_trim(Duration::from_secs(45)) || evicted_audio {
+                    hq_trim.db().shrink_memory();
+                    if evicted_audio {
+                        trim_working_set();
+                    }
+                    println!("[Memory Optimizer] Idle maintenance applied (working set trimmed)");
                     let _ = std::io::stdout().flush();
                 }
             }
@@ -6086,146 +6039,6 @@ mod tests {
     fn test_trim_working_set_safety() {
         // Calling trim_working_set should execute safely without crashing or throwing SEH exceptions
         trim_working_set();
-    }
-
-    #[test]
-    fn test_adaptive_animation_idle_skips_ticks() {
-        // In Idle state (0) with Option 0 (Micro Mic), animation ticks must be skipped
-        let state = 0u8;
-        let opt_idle = 0i32;
-
-        let should_tick = if state == 0 {
-            opt_idle != 0
-        } else {
-            true
-        };
-
-        assert!(!should_tick, "Idle state with static micro mic should not generate animation ticks");
-    }
-
-    #[test]
-    fn test_adaptive_animation_throttled_cadence() {
-        // In Idle state with animated variant (Pulsing Pip), ticks must be throttled to 1 in 4 (80ms)
-        let mut ticks_generated = 0;
-        let mut divider = 0;
-
-        for _ in 0..100 {
-            divider = (divider + 1) % 4;
-            if divider == 0 {
-                ticks_generated += 1;
-            }
-        }
-
-        assert_eq!(ticks_generated, 25, "100 timer cycles at 20ms should produce exactly 25 throttled ticks (80ms cadence)");
-    }
-
-    #[test]
-    fn test_lazy_studio_holder_lifecycle() {
-        let holder: Arc<Mutex<Option<bool>>> = Arc::new(Mutex::new(None));
-
-        // Initial state is unallocated (lazy)
-        assert!(holder.lock().unwrap().is_none(), "Lazy holder should start unallocated");
-
-        // First user demand initializes the holder
-        *holder.lock().unwrap() = Some(true);
-        assert!(holder.lock().unwrap().is_some(), "Lazy holder should be instantiated on demand");
-
-        // Visibility tracking
-        let visible = Arc::new(AtomicBool::new(false));
-        visible.store(true, Ordering::SeqCst);
-        assert!(visible.load(Ordering::SeqCst));
-        visible.store(false, Ordering::SeqCst);
-        assert!(!visible.load(Ordering::SeqCst));
-    }
-
-    #[test]
-    fn test_audio_buffer_safety_and_no_underrun() {
-        // Verify audio buffer size calculations for real-time safety
-        let sample_rate = 16000u32;
-        let duration_secs = 10u32;
-        let expected_samples = (sample_rate * duration_secs) as usize;
-        let bytes_per_pcm16_sample = 2usize;
-        let expected_bytes = expected_samples * bytes_per_pcm16_sample;
-
-        assert_eq!(expected_samples, 160_000);
-        assert_eq!(expected_bytes, 320_000);
-
-        let mut test_buffer = Vec::with_capacity(expected_samples);
-        test_buffer.resize(expected_samples, 0i16);
-        assert_eq!(test_buffer.capacity(), expected_samples);
-        assert_eq!(test_buffer.len(), expected_samples);
-    }
-
-    #[test]
-    fn test_state_machine_pipeline_transitions() {
-        let state = Arc::new(AtomicU8::new(0));
-
-        // Idle (0) -> Listening (1)
-        state.store(1, Ordering::SeqCst);
-        assert_eq!(state.load(Ordering::SeqCst), 1);
-
-        // Listening (1) -> Transcribing (2)
-        state.store(2, Ordering::SeqCst);
-        assert_eq!(state.load(Ordering::SeqCst), 2);
-
-        // Transcribing (2) -> Success (3)
-        state.store(3, Ordering::SeqCst);
-        assert_eq!(state.load(Ordering::SeqCst), 3);
-
-        // Success (3) -> Idle (0)
-        state.store(0, Ordering::SeqCst);
-        assert_eq!(state.load(Ordering::SeqCst), 0);
-
-        // Error (4) -> Idle (0)
-        state.store(4, Ordering::SeqCst);
-        assert_eq!(state.load(Ordering::SeqCst), 4);
-        state.store(0, Ordering::SeqCst);
-        assert_eq!(state.load(Ordering::SeqCst), 0);
-    }
-
-    #[test]
-    fn test_customization_config_roundtrip_and_defaults() {
-        let default_cfg = config::AppConfig::default();
-        assert_eq!(default_cfg.opt_idle, 0);
-        assert_eq!(default_cfg.opt_listening, 0);
-        assert_eq!(default_cfg.opt_transcribe, 0);
-        assert_eq!(default_cfg.opt_success, 0);
-        assert_eq!(default_cfg.opt_error, 0);
-        assert_eq!(default_cfg.surface_opacity, 0.95);
-
-        let serialized = serde_json::to_string(&default_cfg).unwrap();
-        let deserialized: config::AppConfig = serde_json::from_str(&serialized).unwrap();
-        assert_eq!(deserialized, default_cfg);
-    }
-
-    #[test]
-    fn test_app_name_and_icon_sanitization() {
-        assert_eq!(app_icon::format_app_name("T3 Code (Alpha).exe"), "T3 Code (Alpha)");
-        assert_eq!(app_icon::format_app_name("t3code.exe"), "T3 Code (Alpha)");
-        assert_eq!(app_icon::format_app_name("P3 Code Alpha.exe"), "T3 Code (Alpha)");
-        assert_eq!(app_icon::format_app_name("code.exe"), "VS Code");
-        assert_eq!(app_icon::format_app_name("chrome.exe"), "Google Chrome");
-        assert_eq!(app_icon::format_app_name("slack.exe"), "Slack");
-        assert_eq!(app_icon::format_app_name("windowsterminal.exe"), "Windows Terminal");
-        assert_eq!(app_icon::format_app_name("notepad.exe"), "Notepad");
-        assert_eq!(app_icon::format_app_name("Desktop"), "Desktop");
-
-        let (icon, has_icon) = app_icon::get_app_icon("Desktop", None);
-        assert!(!has_icon);
-        assert_eq!(icon.size().width, 0);
-    }
-
-    #[test]
-    fn test_history_scroll_animation_suppression_gate() {
-        // Tab 0 (History): animation updates must be skipped so Slint event loop is 100% free for scrolling
-        let active_tab = 0;
-        let should_tick_studio = active_tab == 1;
-        assert!(!should_tick_studio, "History tab must completely suppress studio animation property sets");
-
-        // Tab 2 (Customization): animation updates active
-        let active_tab = 2;
-        let should_tick_studio = active_tab == 2;
-        assert!(should_tick_studio, "Customization tab must receive animation property sets");
     }
 
     fn screen_rect(left: i32, top: i32, right: i32, bottom: i32) -> ScreenRect {

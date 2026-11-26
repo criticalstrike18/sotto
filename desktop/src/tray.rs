@@ -391,14 +391,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_tray_action_variants() {
-        let action = TrayAction::OpenStudio;
-        assert_eq!(action, TrayAction::OpenStudio);
-        assert_ne!(action, TrayAction::TogglePill);
-        assert_ne!(action, TrayAction::Exit);
-    }
-
-    #[test]
     fn test_tray_manager_initialization() {
         let tray_res = SystemTray::new(|_| {});
         assert!(tray_res.is_ok(), "SystemTray initialization should succeed");

@@ -70,56 +70,15 @@ pub fn stage_bg(mode: i32) -> &'static str {
     }
 }
 
-// --- Pill width mirror (`pill-width()` in hud.slint:46-61) ---------------------
+// --- Pill width spec (`pill-width()` in hud.slint:52-67 & 727-742) ---------------
 // Rows = active-state 0..=4, cols = option A/B/C (0/1/2).
 pub const PILL_WIDTHS: [[f32; 3]; 5] = [
     [48.0, 44.0, 56.0],   // Idle: Micro Mic / Standby LED / Edge Accent
-    [112.0, 84.0, 100.0], // Listening
-    [72.0, 80.0, 76.0],   // Transcribe
-    [60.0, 68.0, 64.0],   // Success
-    [60.0, 60.0, 64.0],   // Error (falls through to default branch)
+    [112.0, 84.0, 100.0], // Listening: 3-Bar / 5-Bar / Pulse Ring
+    [72.0, 76.0, 80.0],   // Transcribe: Orbit / Ripple / Radar
+    [60.0, 64.0, 68.0],   // Success: Minimal / Ring / Double Pip
+    [60.0, 60.0, 64.0],   // Error: Exclamation / Breath / Triangle Flash
 ];
-
-/// `active-option()` mirror: which opt slot drives the current state.
-pub fn active_option_index(state: i32, opts: [i32; 5]) -> i32 {
-    match state {
-        0 => opts[0],
-        1 => opts[1],
-        2 => opts[2],
-        3 => opts[3],
-        _ => opts[4],
-    }
-}
-
-// --- Validated setters (wiring in main.rs:358-412 should adopt these) ----------
-pub fn clamp_state(s: i32) -> i32 {
-    s.clamp(0, 4)
-}
-
-pub fn clamp_option(o: i32) -> i32 {
-    o.clamp(0, 2)
-}
-
-pub fn clamp_opacity(op: f32) -> f32 {
-    if !op.is_finite() {
-        return 0.85;
-    }
-    op.clamp(0.0, 1.0)
-}
-
-pub fn clamp_bg_mode(bg: i32) -> i32 {
-    bg.clamp(0, 3)
-}
-
-pub fn clamp_tab(tab: i32) -> i32 {
-    tab.clamp(0, 2)
-}
-
-/// Robust `M:SS` timer text. (Wiring uses `format!("0:{:02}")`, which breaks
-/// past 59s; adopt this instead.)
-pub fn format_timer_text(total_secs: u32) -> String {
-    format!("{}:{:02}", total_secs / 60, total_secs % 60)
-}
 
 // --- Sharpness -----------------------------------------------------------------
 /// True when a logical-px length lands exactly on a physical pixel grid.
@@ -130,7 +89,7 @@ pub fn is_crisp_at_scale(logical_px: f32, scale: f32) -> bool {
 
 /// Minimum pointer target edge, px (WCAG 2.2 AA §2.5.8).
 pub const MIN_TARGET_PX: f32 = 24.0;
-/// Copy button geometry in hud.slint:1180-1181.
+/// Copy button geometry in history_card.slint.
 pub const COPY_BUTTON_W: f32 = 72.0;
 pub const COPY_BUTTON_H: f32 = 24.0;
 /// Body text readability floor, px (transcript is 13.5px).

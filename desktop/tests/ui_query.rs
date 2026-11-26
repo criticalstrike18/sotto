@@ -874,3 +874,89 @@ fn test_reopen_scroll_reset_and_unshown_viewport_recovery() {
     PROVIDERS_SCROLLER.with(|sc| assert_eq!(sc.borrow().current_y(), 0.0));
     CUSTOM_SCROLLER.with(|sc| assert_eq!(sc.borrow().current_y(), 0.0));
 }
+
+#[test]
+fn test_empty_history_hides_purge_and_long_cards_stay_within_width() {
+    let s = studio();
+    s.window().set_size(slint::PhysicalSize::new(760, 600));
+    s.set_active_tab(0);
+    s.set_history_count(0);
+
+    // Empty history must not show/size the purge button.
+    let purge_visible = ElementHandle::find_by_element_id(&s, "StudioWindow::purge-btn")
+        .next()
+        .is_some_and(|h| h.size().width > 0.0 && h.size().height > 0.0);
+    assert!(!purge_visible, "empty history must hide purge-btn");
+
+    // Long multi-sentence transcript at minimum window width (760px) must wrap inside container width.
+    let long_body = "Long transcript wrapping check across narrow desktop viewports to guarantee zero horizontal clipping or overflowing card geometry inside the Studio history container even when dictation exceeds several sentences cleanly. ".repeat(2);
+    s.set_history_items(ModelRc::from(Rc::new(VecModel::from(vec![item(1, &long_body)]))));
+    s.set_history_count(1);
+
+    let container = find_one(&s, "StudioWindow::history-container");
+    let cx = container.absolute_position().x;
+    let cw = container.size().width;
+    let card = ElementHandle::find_by_element_type_name(&s, "HistoryCard")
+        .next()
+        .expect("HistoryCard must render for non-empty history");
+    let cpos = card.absolute_position();
+    let csize = card.size();
+    assert!(csize.height > 100.0, "long wrapped card must grow vertically (got {:.1})", csize.height);
+    assert!(cpos.x >= cx && cpos.x + csize.width <= cx + cw, "card clipped outside container bounds");
+}
+
+#[test]
+fn test_customization_cards_stack_and_align_across_viewport_sizes() {
+    for (w, h) in [(760, 600), (1040, 840)] {
+        let s = studio();
+        s.window().set_size(slint::PhysicalSize::new(w, h));
+        s.set_active_tab(2);
+
+        let container = find_one(&s, "StudioWindow::custom_container");
+        let cx = container.absolute_position().x;
+        let cw = container.size().width;
+        let ch = container.size().height.max(200.0);
+        let max_scroll = (s.get_custom_content_height() - ch).max(0.0);
+
+        let ids = [
+            "StudioWindow::stage-box",
+            "StudioWindow::custom_card",
+            "StudioWindow::trigger_card",
+            "StudioWindow::cancel_card",
+            "StudioWindow::startup_card",
+            "StudioWindow::feedback_card",
+        ];
+        let mut prev_bottom = -1.0f32;
+        let mut ref_w: Option<f32> = None;
+
+        for id in ids {
+            // Bring card inside custom_flick's visible clip so ElementHandle traverses it,
+            // then compare positions in content space (screen_y - custom_viewport_y).
+            let mut found = None;
+            let mut offset = 0.0f32;
+            loop {
+                s.set_custom_viewport_y(-offset);
+                if let Some(el) = ElementHandle::find_by_element_id(&s, id).next() {
+                    found = Some(el);
+                    break;
+                }
+                if offset >= max_scroll {
+                    break;
+                }
+                offset = (offset + ch * 0.45).min(max_scroll);
+            }
+            let el = found.unwrap_or_else(|| panic!("{w}x{h}: element must be findable while scrolling: {id}"));
+            let pos = el.absolute_position();
+            let size = el.size();
+            let content_y = pos.y - s.get_custom_viewport_y();
+            assert!(size.width > 400.0 && size.height > 40.0, "{w}x{h} {id}: unexpectedly small {size:?}");
+            assert!(pos.x >= cx && pos.x + size.width <= cx + cw + 1.0, "{w}x{h} {id}: overflows custom_container");
+            assert!(content_y >= prev_bottom - 0.5, "{w}x{h} {id}: overlaps previous card ({:.1} < {:.1})", content_y, prev_bottom);
+            prev_bottom = content_y + size.height;
+            match ref_w {
+                None => ref_w = Some(size.width),
+                Some(rw) => assert!((size.width - rw).abs() <= 1.5, "{w}x{h} {id}: card width {:.1} misaligned from {:.1}", size.width, rw),
+            }
+        }
+    }
+}

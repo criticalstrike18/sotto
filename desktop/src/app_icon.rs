@@ -5,7 +5,7 @@ use std::collections::{HashMap, VecDeque};
 use std::path::Path;
 use std::sync::Mutex;
 
-pub const MAX_ICON_CACHE_ENTRIES: usize = 128;
+pub const MAX_ICON_CACHE_ENTRIES: usize = 64;
 
 /// Strips `.exe` and maps raw executable names to human-readable sentence/title case brand names
 pub fn format_app_name(raw: &str) -> String {
@@ -143,7 +143,7 @@ thread_local! {
 
 /// Drops cached `slint::Image` texture handles owned by the calling UI thread.
 pub fn clear_ui_icon_cache() {
-    UI_IMAGE_CACHE.with(|c| c.borrow_mut().clear());
+    UI_IMAGE_CACHE.with(|c| *c.borrow_mut() = HashMap::new());
 }
 
 fn shared_ui_image(clean_key: &str, raw_opt: Option<&RawIconData>) -> (slint::Image, bool) {

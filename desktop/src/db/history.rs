@@ -66,7 +66,7 @@ impl HistoryDb {
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.pragma_update(None, "synchronous", "NORMAL")?;
         conn.pragma_update(None, "temp_store", "MEMORY")?;
-        conn.pragma_update(None, "cache_size", -2000)?; // 2MB cache
+        conn.pragma_update(None, "cache_size", -512)?; // 512KB bounded page cache
 
         // Create table and indexes with complete column schema
         conn.execute_batch(
@@ -202,7 +202,17 @@ impl HistoryDb {
         for item in rows {
             results.push(item?);
         }
+        drop(stmt);
+        drop(conn);
+        self.shrink_memory();
         Ok(results)
+    }
+
+    /// Releases transient SQLite page and lookaside allocations back to the heap.
+    pub fn shrink_memory(&self) {
+        if let Ok(conn) = self.conn.lock() {
+            let _ = conn.execute_batch("PRAGMA shrink_memory;");
+        }
     }
 
     /// Returns the total count of saved history records
@@ -225,9 +235,12 @@ impl HistoryDb {
 
     /// Clears the entire dictation history
     pub fn clear_all(&self) -> SqlResult<()> {
-        let conn = self.conn.lock().unwrap();
-        conn.execute("DELETE FROM dictation_history;", [])?;
-        conn.execute("VACUUM;", [])?;
+        {
+            let conn = self.conn.lock().unwrap();
+            conn.execute("DELETE FROM dictation_history;", [])?;
+            conn.execute("VACUUM;", [])?;
+        }
+        self.shrink_memory();
         Ok(())
     }
 }

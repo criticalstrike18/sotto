@@ -643,7 +643,7 @@ impl AudioRecorder {
     pub fn new_with_mode(mode: CaptureMode) -> Result<Self, String> {
         let host = cpal::default_host();
         let is_recording = Arc::new(AtomicBool::new(false));
-        let buffer = Arc::new(Mutex::new(Vec::with_capacity(48_000 * 10)));
+        let buffer = Arc::new(Mutex::new(Vec::new()));
         let live_energy_raw = Arc::new(AtomicU32::new(0));
         let live_low_raw = Arc::new(AtomicU32::new(0));
         let live_mid_raw = Arc::new(AtomicU32::new(0));
@@ -674,8 +674,8 @@ impl AudioRecorder {
             take_counter: 0,
             last_timing: None,
             long: LongCaptureState::default(),
-            drain_scratch: Vec::with_capacity(96_000),
-            onboard_drain_scratch: Vec::with_capacity(48_000),
+            drain_scratch: Vec::new(),
+            onboard_drain_scratch: Vec::new(),
             chunk_soft_bytes: chunker::SOFT_REQUEST_BYTES,
             chunk_hard_bytes: chunker::HARD_REQUEST_BYTES,
         };
@@ -810,6 +810,7 @@ impl AudioRecorder {
             drop(stream);
         }
         self.onboard = None;
+        self.release_idle_buffers();
         match self.mode {
             CaptureMode::AlwaysOn => self.install_primary_paused(None),
             CaptureMode::OnboardOnly => self.install_primary_paused(Some(true)),
@@ -902,6 +903,12 @@ impl AudioRecorder {
         self.is_recording.store(false, Ordering::SeqCst);
         if let Ok(mut buf) = self.buffer.lock() {
             buf.clear();
+            // Reserve ~1s of capture before opening/arming the stream so the
+            // first audio callback never reallocates while staying compact.
+            if buf.capacity() < 48_000 {
+                let spare = 48_000usize.saturating_sub(buf.len());
+                buf.reserve(spare);
+            }
         }
         if let Some(bridge) = &self.onboard {
             if let Ok(mut take) = bridge.take.lock() {
@@ -919,6 +926,27 @@ impl AudioRecorder {
             active: true,
             ..Default::default()
         };
+    }
+
+    /// Drops transient capture and scratch capacity after a take finishes or on
+    /// mode rebuild so peak recordings never pin megabytes of idle RAM.
+    fn release_idle_buffers(&mut self) {
+        self.long = LongCaptureState::default();
+        if let Ok(mut buf) = self.buffer.lock() {
+            buf.clear();
+            buf.shrink_to_fit();
+        }
+        if let Some(bridge) = &self.onboard {
+            if let Ok(mut take) = bridge.take.lock() {
+                take.clear();
+                take.shrink_to_fit();
+            }
+        }
+        const SCRATCH_RETAIN_CAP: usize = 8192;
+        self.drain_scratch.clear();
+        self.drain_scratch.shrink_to(SCRATCH_RETAIN_CAP);
+        self.onboard_drain_scratch.clear();
+        self.onboard_drain_scratch.shrink_to(SCRATCH_RETAIN_CAP);
     }
 
     fn arm_at(&self, trigger: Instant) {
@@ -1332,10 +1360,12 @@ impl AudioRecorder {
             ..Default::default()
         };
 
-        match self.mode {
+        let result = match self.mode {
             CaptureMode::DualMicSplice => self.stop_dual(&mut timing, finalize_start),
             _ => self.stop_single(&mut timing, finalize_start),
-        }
+        };
+        self.release_idle_buffers();
+        result
     }
 
     /// Overrides the per-chunk upload budget for this take. Called by the

@@ -9,8 +9,14 @@ fn main() {
     // codegen succeeds and all 240+ tests pass. There is no stable-API knob
     // to silence them. If a future Slint removes this path it will fail LOUD
     // at compile time; migrate then to library mode or slint-interpreter.
+    // Release builds omit Slint debug element-id tables to reduce binary size
+    // and memory overhead; dev/test builds keep them enabled for ElementHandle
+    // UI tests (unless SOTTO_SLINT_DEBUG_INFO is explicitly set for release tests).
+    println!("cargo:rerun-if-env-changed=SOTTO_SLINT_DEBUG_INFO");
+    let emit_debug_info = std::env::var("PROFILE").as_deref() != Ok("release")
+        || std::env::var_os("SOTTO_SLINT_DEBUG_INFO").is_some();
     let config = || {
-        slint_build::CompilerConfiguration::new().with_debug_info(true)
+        slint_build::CompilerConfiguration::new().with_debug_info(emit_debug_info)
     };
     // Each ui/components/*.slint root is compiled separately so tests can
     // instantiate components in isolation. hud.slint is compiled LAST so

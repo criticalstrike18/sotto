@@ -306,19 +306,7 @@ impl Transcriber {
         wav_bytes: Vec<u8>,
         prompt: Option<&str>,
     ) -> Result<TranscriptionResult, String> {
-        static TRANSCRIBER_RUNTIME: std::sync::OnceLock<tokio::runtime::Runtime> =
-            std::sync::OnceLock::new();
-        let rt = if let Some(rt) = TRANSCRIBER_RUNTIME.get() {
-            rt
-        } else {
-            let built = tokio::runtime::Builder::new_multi_thread()
-                .worker_threads(2)
-                .enable_all()
-                .build()
-                .map_err(|e| format!("Failed to create tokio runtime: {}", e))?;
-            TRANSCRIBER_RUNTIME.get_or_init(|| built)
-        };
-        rt.block_on(self.transcribe_with_prompt(wav_bytes, prompt))
+        super::shared_runtime()?.block_on(self.transcribe_with_prompt(wav_bytes, prompt))
     }
 }
 

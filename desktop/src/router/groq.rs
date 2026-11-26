@@ -1,7 +1,6 @@
 // Copyright (c) 2026 Sotto
 // Pre-Warmed Groq HTTP/2 Client (Whisper-Large-v3-Turbo + Low Latency Routing)
 
-use std::sync::Arc;
 use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 
@@ -57,11 +56,12 @@ use super::key_pool::{mask_key, KeyPool};
 
 #[derive(Clone)]
 pub struct GroqClient {
-    client: Arc<reqwest::Client>,
+    client: &'static reqwest::Client,
     key_pool: KeyPool,
     model: String,
     prompt: String,
     language: String,
+    endpoint_override: Option<String>,
 }
 
 impl GroqClient {
@@ -76,20 +76,15 @@ impl GroqClient {
 
     /// Creates a new GroqClient with a pool of keys for automated rotation.
     pub fn with_keys(keys: Vec<String>) -> Result<Self, String> {
-        let client = reqwest::Client::builder()
-            .tcp_nodelay(true)
-            .pool_idle_timeout(Some(Duration::from_secs(120)))
-            .pool_max_idle_per_host(8)
-            .timeout(Duration::from_secs(15))
-            .build()
-            .map_err(|e| format!("Failed to build reqwest HTTP/2 client: {}", e))?;
+        let client = super::shared_http_client()?;
 
         let instance = Self {
-            client: Arc::new(client),
+            client,
             key_pool: KeyPool::new(keys),
             model: DEFAULT_GROQ_MODEL.to_string(),
             prompt: DEFAULT_PROMPT.to_string(),
             language: "en".to_string(),
+            endpoint_override: None,
         };
 
         if !instance.key_pool.is_empty() {
@@ -97,6 +92,20 @@ impl GroqClient {
         }
 
         Ok(instance)
+    }
+
+    /// Creates a GroqClient targeting a custom HTTP endpoint (used by tests to
+    /// exercise real multipart requests and 429 key rotation locally without prewarm).
+    pub fn with_endpoint(keys: Vec<String>, endpoint: impl Into<String>) -> Result<Self, String> {
+        let client = super::shared_http_client()?;
+        Ok(Self {
+            client,
+            key_pool: KeyPool::new(keys),
+            model: DEFAULT_GROQ_MODEL.to_string(),
+            prompt: DEFAULT_PROMPT.to_string(),
+            language: "en".to_string(),
+            endpoint_override: Some(endpoint.into()),
+        })
     }
 
     pub fn key_pool(&self) -> &KeyPool {
@@ -131,16 +140,13 @@ impl GroqClient {
     pub fn list_models(&self) -> Result<Vec<String>, String> {
         let key = self.key_pool.get_next_key().ok_or_else(|| "GROQ_API_KEY is not set in key pool.".to_string())?;
 
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .map_err(|e| format!("Failed to create tokio runtime: {}", e))?;
-
-        let client = Arc::clone(&self.client);
+        let rt = super::shared_runtime()?;
+        let client = self.client;
         let parsed: ModelListResponse = rt.block_on(async move {
             let res = client
                 .get("https://api.groq.com/openai/v1/models")
                 .header("Authorization", format!("Bearer {}", key))
+                .timeout(Duration::from_secs(15))
                 .send()
                 .await
                 .map_err(|e| format!("Network error: {}", e))?;
@@ -160,32 +166,26 @@ impl GroqClient {
     /// Pre-warms the HTTP/2 and TLS socket connection to Groq in the background,
     /// so the first speech transcription incurs 0ms DNS and TLS handshake latency.
     pub fn prewarm(&self) {
-        let client = Arc::clone(&self.client);
+        let client = self.client;
         let api_key = self.key_pool.get_next_key();
 
-        // If inside a Tokio runtime, spawn directly; otherwise spawn in a detached background thread with its own runtime.
+        let fut = async move {
+            let mut req = client
+                .get("https://api.groq.com/openai/v1/models")
+                .timeout(Duration::from_secs(15));
+            if let Some(ref k) = api_key {
+                req = req.header("Authorization", format!("Bearer {}", k));
+            }
+            let _ = req.send().await;
+            println!("[Groq Client] HTTP/2 connection pre-warmed to api.groq.com");
+        };
+
+        // If inside a Tokio runtime, spawn directly; otherwise reuse the shared runtime
+        // instead of allocating a temporary OS thread + runtime per prewarm.
         if let Ok(handle) = tokio::runtime::Handle::try_current() {
-            handle.spawn(async move {
-                let mut req = client.get("https://api.groq.com/openai/v1/models");
-                if let Some(ref k) = api_key {
-                    req = req.header("Authorization", format!("Bearer {}", k));
-                }
-                let _ = req.send().await;
-                println!("[Groq Client] HTTP/2 connection pre-warmed to api.groq.com");
-            });
-        } else {
-            std::thread::spawn(move || {
-                if let Ok(rt) = tokio::runtime::Builder::new_current_thread().enable_all().build() {
-                    rt.block_on(async move {
-                        let mut req = client.get("https://api.groq.com/openai/v1/models");
-                        if let Some(ref k) = api_key {
-                            req = req.header("Authorization", format!("Bearer {}", k));
-                        }
-                        let _ = req.send().await;
-                        println!("[Groq Client] HTTP/2 connection pre-warmed to api.groq.com");
-                    });
-                }
-            });
+            handle.spawn(fut);
+        } else if let Ok(rt) = super::shared_runtime() {
+            rt.spawn(fut);
         }
     }
 
@@ -246,11 +246,13 @@ impl GroqClient {
                 form = form.text("language", lang.to_string());
             }
 
+            let endpoint = self.endpoint_override.as_deref().unwrap_or(GROQ_ENDPOINT);
             let response = self
                 .client
-                .post(GROQ_ENDPOINT)
+                .post(endpoint)
                 .header("Authorization", format!("Bearer {}", key))
                 .multipart(form)
+                .timeout(Duration::from_secs(15))
                 .send()
                 .await;
 
@@ -360,6 +362,7 @@ impl GroqClient {
             .header("Authorization", format!("Bearer {}", key))
             .header("Content-Type", "application/json")
             .json(&payload)
+            .timeout(Duration::from_secs(15))
             .send()
             .await
             .map_err(|e| format!("Groq Chat request failed: {}", e))?;
@@ -394,12 +397,7 @@ impl GroqClient {
         wav_bytes: Vec<u8>,
         prompt: Option<&str>,
     ) -> Result<TranscriptionResult, String> {
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .map_err(|e| format!("Failed to create tokio runtime: {}", e))?;
-
-        rt.block_on(self.transcribe_with_prompt(wav_bytes, prompt))
+        super::shared_runtime()?.block_on(self.transcribe_with_prompt(wav_bytes, prompt))
     }
 
     pub fn set_api_key(&mut self, key: String) {

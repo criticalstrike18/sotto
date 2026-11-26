@@ -208,91 +208,69 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_empty_binding_is_not_valid() {
+    fn test_binding_validity_display_and_dispatch_plans() {
         assert!(!TriggerBinding::empty().is_valid());
-    }
 
-    #[test]
-    fn test_f8_is_valid() {
-        let f8 = TriggerBinding::f8();
-        assert!(f8.is_valid());
-        assert_eq!(f8.display(), "F8");
-        let p = plan_binding(&f8);
-        assert_eq!(p.keyboard, Some((0, 0x77)));
-        assert!(p.standalone.is_empty());
-        assert_eq!(p.mouse, None);
-    }
+        let cases = [
+            (
+                TriggerBinding::f8(),
+                "F8",
+                Some((0, 0x77)),
+                vec![],
+                None,
+            ),
+            (
+                TriggerBinding::escape(),
+                "Esc",
+                Some((0, 0x1B)),
+                vec![],
+                None,
+            ),
+            (
+                TriggerBinding::ctrl_shift_space(),
+                "Ctrl + Shift + Space",
+                Some((0x0002 | 0x0004, 0x20)),
+                vec![],
+                None,
+            ),
+            (
+                TriggerBinding::normalized(0, Some(0x11), None),
+                "Ctrl",
+                None,
+                vec![0x11],
+                None,
+            ),
+            (
+                TriggerBinding { mods: 0, key: None, mouse: Some(1) },
+                "Mouse Back",
+                None,
+                vec![],
+                Some((1, 0)),
+            ),
+            (
+                TriggerBinding { mods: 0x0002, key: None, mouse: Some(1) },
+                "Ctrl + Mouse Back",
+                None,
+                vec![],
+                Some((1, 0x0002)),
+            ),
+            (
+                TriggerBinding { mods: 0x0002 | 0x0004, key: None, mouse: None },
+                "Ctrl + Shift",
+                None,
+                vec![0x11, 0x10],
+                None,
+            ),
+        ];
 
-    #[test]
-    fn test_escape_is_valid() {
-        let esc = TriggerBinding::escape();
-        assert!(esc.is_valid());
-        assert_eq!(esc.display(), "Esc");
-        let p = plan_binding(&esc);
-        assert_eq!(p.keyboard, Some((0, 0x1B)));
-        assert!(p.standalone.is_empty());
-        assert_eq!(p.mouse, None);
-    }
-
-    #[test]
-    fn test_ctrl_shift_space_plan() {
-        let b = TriggerBinding::ctrl_shift_space();
-        assert!(b.is_valid());
-        assert_eq!(b.display(), "Ctrl + Shift + Space");
-        let p = plan_binding(&b);
-        assert_eq!(p.keyboard, Some((0x0002 | 0x0004, 0x20)));
-        assert!(p.standalone.is_empty());
-        assert_eq!(p.mouse, None);
-    }
-
-    #[test]
-    fn test_standalone_ctrl_plan() {
-        // Standalone Ctrl press (mods=0, vk=Ctrl) becomes mods-only.
-        let b = TriggerBinding::normalized(0, Some(0x11), None);
-        assert!(b.is_valid());
-        assert_eq!(b.display(), "Ctrl");
-        assert_eq!(b.mods, 0x0002);
-        assert_eq!(b.key, None);
-        let p = plan_binding(&b);
-        assert_eq!(p.keyboard, None);
-        assert_eq!(p.standalone, vec![0x11]);
-        assert_eq!(p.mouse, None);
-    }
-
-    #[test]
-    fn test_mouse_back_plan() {
-        let b = TriggerBinding { mods: 0, key: None, mouse: Some(1) };
-        assert!(b.is_valid());
-        assert_eq!(b.display(), "Mouse Back");
-        let p = plan_binding(&b);
-        assert_eq!(p.keyboard, None);
-        assert!(p.standalone.is_empty());
-        assert_eq!(p.mouse, Some((1, 0)));
-    }
-
-    #[test]
-    fn test_ctrl_mouse_back_chord_plan() {
-        let b = TriggerBinding { mods: 0x0002, key: None, mouse: Some(1) };
-        assert!(b.is_valid());
-        assert_eq!(b.display(), "Ctrl + Mouse Back");
-        let p = plan_binding(&b);
-        // Mouse-only -> hook matcher only.
-        assert_eq!(p.keyboard, None);
-        // Chord -> hook matcher gated on mods, no OS hotkey.
-        assert_eq!(p.mouse, Some((1, 0x0002)));
-        // Must NOT also register Ctrl as a standalone modifier!
-        assert!(p.standalone.is_empty());
-    }
-
-    #[test]
-    fn test_ctrl_shift_standalone_plan() {
-        let b = TriggerBinding { mods: 0x0002 | 0x0004, key: None, mouse: None };
-        assert!(b.is_valid());
-        assert_eq!(b.display(), "Ctrl + Shift");
-        let p = plan_binding(&b);
-        assert_eq!(p.keyboard, None);
-        assert_eq!(p.standalone, vec![0x11, 0x10]);
-        assert_eq!(p.mouse, None);
+        for (binding, expected_disp, expected_kbd, expected_standalone, expected_mouse) in cases {
+            assert!(binding.is_valid(), "expected valid binding: {expected_disp}");
+            assert_eq!(binding.display(), expected_disp);
+            let plan = plan_binding(&binding);
+            assert_eq!(plan.keyboard, expected_kbd, "keyboard plan mismatch for {expected_disp}");
+            assert_eq!(plan.standalone, expected_standalone, "standalone plan mismatch for {expected_disp}");
+            assert_eq!(plan.mouse, expected_mouse, "mouse plan mismatch for {expected_disp}");
+        }
     }
 
     #[test]

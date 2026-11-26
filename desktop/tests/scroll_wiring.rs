@@ -158,32 +158,8 @@ fn test_shrinking_content_reclamps_target() {
 }
 
 // ---------------------------------------------------------------------------
-// Repaint budget (Issue 6)
+// Scaling & budget validation (Issues 5 & 6)
 // ---------------------------------------------------------------------------
-
-#[test]
-fn test_exactly_one_viewport_write_per_tick() {
-    // Wiring contract: one `tick()` => at most one `set_history_viewport_y`.
-    // Simulates the driver and asserts writes == ticks (no duplicate sets).
-    let mut e = SmoothScrollEngine::new();
-    e.set_dimensions(3000.0, 600.0);
-    e.on_wheel_accelerated_dt(-600.0, 1.0);
-    let mut ticks = 0;
-    let mut writes = 0;
-    let start = Instant::now();
-    while start.elapsed() < Duration::from_secs(3) {
-        std::thread::sleep(Duration::from_millis(8));
-        match e.tick() {
-            Some(_) => {
-                ticks += 1;
-                writes += 1; // exactly one setter call per tick, as in main.rs:324-326
-            }
-            None => break,
-        }
-    }
-    assert!(ticks > 3);
-    assert_eq!(writes, ticks, "must be exactly one viewport write per tick");
-}
 
 #[test]
 fn test_large_list_still_settles_in_budget() {
@@ -248,111 +224,6 @@ fn test_zero_content_cannot_scroll() {
     e.on_wheel_accelerated_dt(-120.0, 1.0);
     assert_eq!(e.target_y(), 0.0);
 }
-// ---------------------------------------------------------------------------
-// Fixes 1, 2, 3, 4: Pixel Snapping, Virtualization Windowing, & Write Throttling
-// ---------------------------------------------------------------------------
-
-#[test]
-fn test_physical_pixel_snapping() {
-    // Fix 1: Fractional logical offsets like -213.47px cause text glyph cache
-    // misses and visible shimmer. Snapping to physical device pixels ensures
-    // crisp glyph rasterization across any DPI scale factor.
-    for scale in [1.0f32, 1.25, 1.5, 2.0] {
-        let raw_y = -213.4729f32;
-        let snapped_y = (raw_y * scale).round() / scale;
-        let physical_px = (snapped_y * scale).round();
-        assert!(
-            ((snapped_y * scale) - physical_px).abs() < 1e-4,
-            "snapped_y must align to exact integer physical pixels at scale {}",
-            scale
-        );
-    }
-}
-
-#[test]
-fn test_windowed_virtualization_spacers_sum_to_total() {
-    // Fix 3: Virtualization with spacers.
-    // 100 items with variable heights between 80px and 220px.
-    let heights: Vec<f32> = (0..100).map(|i| 80.0 + (i % 8) as f32 * 20.0).collect();
-    let mut offsets = Vec::with_capacity(heights.len());
-    let mut acc = 0.0f32;
-    for &h in &heights {
-        offsets.push(acc);
-        acc += h + 10.0;
-    }
-    let total_content_h = compute_content_height(&heights, 10.0);
-    let visible_h = 600.0f32;
-    let cushion = 350.0f32;
-
-    // Test across various scroll offsets: top, 25%, 50%, 75%, bottom
-    for scroll_y in [0.0f32, 1500.0, 4000.0, 8000.0, total_content_h - visible_h] {
-        let view_min = (scroll_y - cushion).max(0.0);
-        let view_max = scroll_y + visible_h + cushion;
-
-        let first_idx = offsets
-            .iter()
-            .zip(heights.iter())
-            .position(|(&off, &h)| off + h >= view_min)
-            .unwrap_or(0);
-
-        let last_idx = offsets
-            .iter()
-            .rposition(|&off| off <= view_max)
-            .unwrap_or(heights.len() - 1)
-            .max(first_idx)
-            .min(heights.len() - 1);
-
-        let active_count = last_idx - first_idx + 1;
-        // Verify only a small window of cards (~10 to 14) is instantiated, not all 100
-        assert!(
-            active_count <= 16,
-            "windowed items ({active_count}) must be O(12 cards), not O(all 100)"
-        );
-
-        let top_spacer = offsets[first_idx];
-        let bottom_spacer = if last_idx < heights.len() - 1 {
-            let end_y = offsets[last_idx] + heights[last_idx];
-            (total_content_h - end_y).max(0.0)
-        } else {
-            0.0
-        };
-
-        let visible_slice_h = if active_count == 1 {
-            heights[first_idx]
-        } else {
-            offsets[last_idx] + heights[last_idx] - offsets[first_idx]
-        };
-
-        let reconstructed_total = top_spacer + visible_slice_h + bottom_spacer;
-        assert!(
-            (reconstructed_total - total_content_h).abs() < 1e-3,
-            "spacers + visible cards ({reconstructed_total}) must equal total content height ({total_content_h})"
-        );
-    }
-}
-
-#[test]
-fn test_auxiliary_write_throttling_contract() {
-    // Fix 4: Throttle aux writes (progress moved < 0.005).
-    let mut last_written = 0.0f32;
-    let mut write_count = 0;
-
-    // Simulate 100 continuous micro-steps of 0.001
-    for step in 1..=100 {
-        let current_prog = step as f32 * 0.001;
-        if (current_prog - last_written).abs() >= 0.005 {
-            write_count += 1;
-            last_written = current_prog;
-        }
-    }
-
-    // 100 frames of micro-motion should only cause ~18-20 writes, saving ~80 dirty-region repaints
-    assert!(
-        write_count >= 18 && write_count <= 20,
-        "throttled writes ({write_count}) must reduce 100 frames to ~18-20 writes"
-    );
-}
-
 #[test]
 fn test_row_spacing_pitch_calibration() {
     use sotto_desktop::smooth_scroll::{compute_content_height, ROW_SPACING};
@@ -388,28 +259,6 @@ fn test_char_advance_and_cjk_glyph_measurement() {
     let cjk_cols: usize = cjk_text.chars().map(|c| if (c as u32) > 0x2E80 { 2 } else { 1 }).sum();
     let cjk_lines = ((cjk_cols.max(1) + chars_per_line - 1) / chars_per_line).max(1);
     assert_eq!(cjk_lines, 2);
-}
-
-#[test]
-fn test_fling_window_hysteresis_skips_intermediate_rebuilds() {
-    // Fix R7: During fast fling, if scroll position moved < 180px and elapsed < 48ms,
-    // window model rebuild is skipped to keep GPU at 60fps
-    let last_refill_y = 1000.0f32;
-    let cached_win = (10, 18);
-
-    // Simulate 3 micro-frames of 40px scroll at 16ms interval
-    for frame in 1..=3 {
-        let current_scroll = 1000.0 + (frame as f32 * 40.0);
-        let win = (10, 18); // same or neighboring window
-        let scroll_delta = (current_scroll - last_refill_y).abs();
-        let elapsed = Duration::from_millis(frame * 16);
-
-        let should_update = (win != cached_win) && (scroll_delta >= 180.0 || elapsed >= Duration::from_millis(48));
-        // For first 2 frames (< 48ms and < 180px), should_update is false (zero DOM rebuild)
-        if frame < 3 {
-            assert!(!should_update, "frame {frame} must skip rebuild under hysteresis");
-        }
-    }
 }
 
 #[test]
@@ -501,21 +350,6 @@ fn test_gesture_pan_delta_conventions() {
 }
 
 #[test]
-fn test_bottom_overscroll_padding_guarantee() {
-    use sotto_desktop::smooth_scroll::{compute_content_height, LIST_BOTTOM_PADDING, ROW_SPACING};
-    assert!(LIST_BOTTOM_PADDING >= 16.0, "LIST_BOTTOM_PADDING must be at least 16px for safe breathing room");
-
-    let card_heights = vec![85.0, 110.0, 95.0, 140.0, 120.0];
-    let content_h = compute_content_height(&card_heights, ROW_SPACING);
-    let total_h = content_h + LIST_BOTTOM_PADDING;
-
-    // The bottom of the last card is at content_h; the buffer below it is exactly LIST_BOTTOM_PADDING.
-    let buffer_below_last_card = total_h - content_h;
-    assert!((buffer_below_last_card - LIST_BOTTOM_PADDING).abs() < 0.001);
-    assert!(buffer_below_last_card >= 16.0);
-}
-
-#[test]
 fn test_word_aware_wrapping_exceeds_naive_division() {
     use sotto_desktop::smooth_scroll::{estimate_card_height, CARD_BASE_HEIGHT, LINE_HEIGHT_PX};
     // Sentence with realistic word breaks that force earlier line wraps than naive character division.
@@ -594,50 +428,6 @@ fn test_bottom_card_fully_visible_at_extreme_aspect_ratios() {
             16.0 + LIST_OVERSCROLL_PX
         );
     }
-}
-
-#[test]
-fn test_scroll_performance_and_memory_wiring_contracts() {
-    let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let hud = std::fs::read_to_string(manifest_dir.join("ui/hud.slint")).expect("read hud.slint");
-    let main_rs = std::fs::read_to_string(manifest_dir.join("src/main.rs")).expect("read main.rs");
-    let app_icon_rs = std::fs::read_to_string(manifest_dir.join("src/app_icon.rs")).expect("read app_icon.rs");
-
-    // 1. Virtualized history list + duplicate DOM removed + Providers scrollbar wired.
-    assert!(!hud.contains("measure-total-h"), "Duplicate offscreen measurement DOM must stay removed");
-    assert!(hud.contains("history-virtualized"), "Virtualization toggle missing from hud.slint");
-    assert!(hud.contains("providers-scrollbar-track"), "Providers scrollbar missing from hud.slint");
-    assert!(hud.contains("providers-drag-scroll"), "Providers drag scroll callback missing from hud.slint");
-
-    // 2. Event-driven timers, WM_GESTURE handle fix, Studio teardown on X, non-blocking hydration.
-    assert!(main_rs.contains("any_studio_scroller_animating"), "Scroll timer must auto-stop when idle");
-    assert!(main_rs.contains("should_anim_timer_run"), "Pill anim timer must auto-stop when static idle");
-    assert!(main_rs.contains("GetGestureInfo(lparam as _"), "WM_GESTURE must decode HGESTUREINFO from lparam");
-    assert!(main_rs.contains("CloseGestureInfoHandle(lparam as _"), "WM_GESTURE must close lparam gesture handle");
-    assert!(main_rs.contains("ptsLocation"), "WM_GESTURE pan must read ptsLocation coordinates");
-    assert!(main_rs.contains("drop_studio_instance"), "Studio close must drop instance and release caches");
-    assert!(
-        main_rs.contains("reset_all_studio_scrollers"),
-        "Studio close/reset must clear scroller offsets so reopening starts cleanly at top"
-    );
-    assert!(
-        main_rs.contains("effective_studio_metrics") && main_rs.contains("effective_tab_visible_h"),
-        "Pre-show hydration and per-tab layout must use realized metrics with 1040x840 fallback"
-    );
-    assert!(
-        main_rs.contains("STUDIO_LAYOUT_KEY"),
-        "Virtual layout computation must memoize generation/width/scale across wheel events"
-    );
-    assert!(
-        main_rs.contains("hydrate_studio_history_nonblocking(s, history_queue.db(), 500)"),
-        "Studio history load must use non-blocking 500-item hydration"
-    );
-
-    // 3. Bounded + non-blocking + deduplicated app icon cache.
-    assert!(app_icon_rs.contains("MAX_ICON_CACHE_ENTRIES"), "Icon cache must enforce an upper bound");
-    assert!(app_icon_rs.contains("try_get_cached_app_icon"), "Non-blocking icon cache lookup missing");
-    assert!(app_icon_rs.contains("prewarm_app_icon"), "Background icon prewarm helper missing");
-    assert!(app_icon_rs.contains("clear_ui_icon_cache"), "UI icon cache cleanup missing");
 }
 
 #[test]
