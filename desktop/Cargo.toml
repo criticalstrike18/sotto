@@ -59,6 +59,8 @@ slint = { version = "1.9", default-features = false, features = [
     "compat-1-2",
     "raw-window-handle-06",
 ] }
+
+[target.'cfg(target_os = "windows")'.dependencies]
 windows-sys = { version = "0.60", features = [
     "Win32_Foundation",
     "Win32_UI_WindowsAndMessaging",
