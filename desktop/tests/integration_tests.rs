@@ -309,6 +309,23 @@ fn test_app_logic_controller_flows_end_to_end() {
     let (disp_p, _) = apply_reset_trigger_slot(0, &mut cfg);
     assert_eq!(disp_p.primary, "F8");
 
+    // 4b. Keycap splitting across chords, single keys, mouse chords, and unassigned slots.
+    assert_eq!(sotto_desktop::app_logic::binding_keycaps("F8"), vec!["F8"]);
+    assert_eq!(
+        sotto_desktop::app_logic::binding_keycaps("Ctrl + Shift + Space"),
+        vec!["Ctrl", "Shift", "Space"]
+    );
+    assert_eq!(
+        sotto_desktop::app_logic::binding_keycaps("Ctrl + Mouse Back"),
+        vec!["Ctrl", "Mouse Back"]
+    );
+    assert_eq!(
+        sotto_desktop::app_logic::binding_keycaps("Ctrl + +"),
+        vec!["Ctrl", "+"]
+    );
+    assert!(sotto_desktop::app_logic::binding_keycaps("Not set").is_empty());
+    assert!(sotto_desktop::app_logic::binding_keycaps("  ").is_empty());
+
     // 5. Customization snapshot & isolated temp-file AppConfig persistence roundtrip.
     let snap = CustomizationSnapshot {
         opt_idle: 2,

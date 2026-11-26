@@ -16,7 +16,8 @@
 // Backend: headless Slint testing backend (no windows, CI-safe).
 
 use sotto_desktop::components::{
-    HistoryCard, KeyField, ModelRow, ProviderCard, SectionHeader, StatChip, TabBar,
+    HistoryCard, KeyField, Keycap, KeycapCombo, KeycapSize, KeycapTone, ModelRow, ProviderCard,
+    SectionHeader, SottoSwitch, StatChip, TabBar,
 };
 use sotto_desktop::{app_icon, FloatingPillWindow};
 use slint::Model;
@@ -439,4 +440,80 @@ fn test_pill_timer_centered_option_a() {
 #[test]
 fn test_pill_timer_centered_option_c() {
     pill_timer_geometry(2, "VoicePill::pill-timer-c", "VoicePill::listen-row-c");
+}
+
+// ============================================================================
+// SottoSwitch & Keycap / KeycapCombo
+// ============================================================================
+
+#[test]
+fn test_sotto_switch_states_animation_disabled_and_controlled() {
+    ensure_testing_backend();
+    let sw = SottoSwitch::new().expect("SottoSwitch must instantiate");
+    assert!(!sw.get_checked());
+    approx(sw.get_track_w(), 44.0, "switch track width");
+    approx(sw.get_track_h(), 24.0, "switch track height");
+    approx(sw.get_knob_size(), 18.0, "switch knob size");
+    approx(sw.get_knob_x(), 3.0, "switch off knob x");
+
+    let events: Arc<Mutex<Vec<bool>>> = Arc::new(Mutex::new(Vec::new()));
+    let ev_c = Arc::clone(&events);
+    sw.on_toggled(move |v| ev_c.lock().unwrap().push(v));
+
+    sw.invoke_press();
+    assert!(sw.get_checked());
+    i_slint_backend_testing::mock_elapsed_time(std::time::Duration::from_millis(200));
+    approx(sw.get_knob_x(), 23.0, "switch on knob x after animation");
+    assert_eq!(*events.lock().unwrap(), vec![true]);
+
+    // Disabled blocks toggles completely.
+    sw.set_disabled(true);
+    sw.invoke_press();
+    assert!(sw.get_checked());
+    assert_eq!(*events.lock().unwrap(), vec![true]);
+
+    // Controlled mode notifies parent without locally detaching the binding.
+    sw.set_disabled(false);
+    sw.set_controlled(true);
+    sw.invoke_press();
+    assert!(sw.get_checked(), "controlled switch waits for external state sync");
+    assert_eq!(*events.lock().unwrap(), vec![true, false]);
+}
+
+#[test]
+fn test_keycap_sizes_tones_and_combo_rendering() {
+    use i_slint_backend_testing::ElementHandle;
+    ensure_testing_backend();
+
+    let cap = Keycap::new().expect("Keycap must instantiate");
+    cap.set_text("F8".into());
+    approx(cap.get_cap_h(), 28.0, "md keycap height");
+    approx(cap.get_face_h(), 24.0, "raised mechanical face inset (cap_h - 4)");
+    assert!(cap.get_cap_w() >= cap.get_cap_h(), "keycap is at least square");
+
+    cap.set_size(KeycapSize::Sm);
+    approx(cap.get_cap_h(), 22.0, "sm keycap height");
+    cap.set_size(KeycapSize::Lg);
+    approx(cap.get_cap_h(), 32.0, "lg keycap height");
+
+    cap.set_tone(KeycapTone::Muted);
+    approx(cap.get_face_h(), 30.0, "muted keycap sits flush without bottom bevel drop (32 - 2)");
+    cap.set_size(KeycapSize::Md);
+    approx(cap.get_face_h(), 26.0, "muted md keycap face height (28 - 2)");
+
+    let combo = KeycapCombo::new().expect("KeycapCombo must instantiate");
+    let keys = slint::VecModel::from(vec![
+        slint::SharedString::from("Ctrl"),
+        slint::SharedString::from("Shift"),
+        slint::SharedString::from("Space"),
+    ]);
+    combo.set_keys(slint::ModelRc::from(std::rc::Rc::new(keys)));
+    let caps_count = ElementHandle::find_by_element_type_name(&combo, "Keycap").count();
+    assert_eq!(caps_count, 3, "Ctrl + Shift + Space must mount 3 Keycap chips");
+
+    // Armed mode swaps chord caps for a single accent prompt keycap.
+    combo.set_armed(true);
+    combo.set_armed_text("Press keys…".into());
+    let armed_caps = ElementHandle::find_by_element_type_name(&combo, "Keycap").count();
+    assert_eq!(armed_caps, 1, "armed KeycapCombo mounts single prompt keycap");
 }

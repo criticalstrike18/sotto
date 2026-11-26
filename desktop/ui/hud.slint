@@ -12,6 +12,9 @@ import { ModelRow } from "components/model_row.slint";
 import { KeyField } from "components/key_field.slint";
 import { HistoryCard } from "components/history_card.slint";
 import { InfoTooltip } from "components/info_tooltip.slint";
+import { SottoSwitch } from "components/switch.slint";
+import { Keycap, KeycapSize, KeycapTone } from "components/keycap.slint";
+import { KeycapCombo } from "components/keycap_combo.slint";
 import { Theme } from "components/theme.slint";
 
 import "./fonts/Inter-Regular.ttf";
@@ -534,6 +537,111 @@ export component FloatingPillWindow inherits Window {
     }
 }
 
+component ShortcutSlotCard inherits Rectangle {
+    in property <string> slot-label;
+    in property <[string]> keys: [];
+    in property <string> display: "Not set";
+    in property <bool> armed: false;
+    in property <string> armed-text: "Press keys…";
+
+    min-height: 52px;
+    border-radius: Theme.radius-md;
+    background: root.armed ? Theme.rec-arm-alt : Theme.sunken-bg;
+    border-width: 1px;
+    border-color: root.armed ? Theme.accent : Theme.line;
+    animate background, border-color { duration: Theme.motion-snappy; }
+
+    HorizontalLayout {
+        padding-left: Theme.space-16;
+        padding-right: Theme.space-12;
+        padding-top: Theme.space-8;
+        padding-bottom: Theme.space-8;
+        spacing: Theme.space-12;
+
+        // Fixed label column aligns Keycap groups cleanly across all 4 slots.
+        VerticalLayout {
+            width: 132px;
+            alignment: center;
+            Text {
+                text: root.slot-label;
+                font-size: Theme.type-caption.size;
+                font-weight: 600;
+                color: root.armed ? Theme.accent : Theme.ink-muted;
+                font-family: Theme.font-mono;
+                letter-spacing: 0.5px;
+                vertical-alignment: center;
+            }
+        }
+
+        VerticalLayout {
+            horizontal-stretch: 1;
+            alignment: center;
+            KeycapCombo {
+                keys: root.keys;
+                fallback-display: root.display;
+                armed: root.armed;
+                armed-text: root.armed-text;
+                size: KeycapSize.md;
+            }
+        }
+
+        VerticalLayout {
+            alignment: center;
+            HorizontalLayout {
+                spacing: Theme.space-8;
+                @children
+            }
+        }
+    }
+}
+
+component StudioPreferenceRow inherits Rectangle {
+    in property <string> title;
+    in property <string> description;
+    in property <bool> row-hovered: false;
+    in property <bool> boxed: true;
+
+    min-height: 60px;
+    border-radius: root.boxed ? Theme.radius-md : Theme.radius-sm;
+    background: root.boxed ? (root.row-hovered ? Theme.row-hover-bg : Theme.sunken-bg) : transparent;
+    border-width: root.boxed ? 1px : 0px;
+    border-color: root.boxed ? (root.row-hovered ? Theme.line-strong : Theme.line) : transparent;
+    animate background, border-color { duration: Theme.motion-snappy; }
+
+    HorizontalLayout {
+        padding-left: root.boxed ? Theme.space-16 : Theme.space-0;
+        padding-right: root.boxed ? Theme.space-16 : Theme.space-0;
+        padding-top: Theme.space-12;
+        padding-bottom: Theme.space-12;
+        spacing: Theme.space-16;
+
+        VerticalLayout {
+            alignment: center;
+            spacing: Theme.space-4;
+            horizontal-stretch: 1;
+
+            Text {
+                text: root.title;
+                font-size: Theme.type-body.size;
+                font-weight: 600;
+                color: Theme.ink-primary;
+            }
+            Text {
+                text: root.description;
+                font-size: Theme.type-label.size;
+                font-weight: Theme.type-label.weight;
+                color: Theme.ink-secondary;
+                wrap: word-wrap;
+            }
+        }
+
+        VerticalLayout {
+            alignment: center;
+            @children
+        }
+    }
+}
+
 export component StudioWindow inherits Window {
     title: "Sotto — Voice Pill Studio & Settings";
     icon: @image-url("../assets/icons/sotto-mark-dark.svg");
@@ -575,6 +683,10 @@ export component StudioWindow inherits Window {
     in-out property <string> trigger-secondary-display: "Ctrl + Shift + Space";
     in-out property <string> cancel-primary-display: "Esc";
     in-out property <string> cancel-secondary-display: "Not set";
+    in-out property <[string]> trigger-primary-keys: ["F8"];
+    in-out property <[string]> trigger-secondary-keys: ["Ctrl", "Shift", "Space"];
+    in-out property <[string]> cancel-primary-keys: ["Esc"];
+    in-out property <[string]> cancel-secondary-keys: [];
     in-out property <bool> launch-on-startup: false;
     callback toggle-launch-on-startup();
     in-out property <string> trigger-status: "";
@@ -1124,67 +1236,14 @@ export component StudioWindow inherits Window {
                             }
                         }
 
-                        // Hotkey Action Prompt (shadcn <kbd>)
+                        // Hotkey Action Prompt (slintcn mechanical Keycaps reflecting active primary trigger)
                         HorizontalLayout {
                             alignment: center;
-                            spacing: Theme.space-4;
-
-                            Rectangle {
-                                background: Theme.chrome-bg;
-                                border-radius: 5px;
-                                border-width: 1px;
-                                border-color: Theme.line;
-                                height: 24px;
-                                HorizontalLayout {
-                                    padding-left: Theme.space-8; padding-right: Theme.space-8;
-                                    Text {
-                                        text: "Ctrl";
-                                        font-size: Theme.type-label.size;
-                                        font-weight: 600;
-                                        color: Theme.ink-primary;
-                                        font-family: Theme.font-mono;
-                                                        }
-                                }
-                            }
-
-                            Text { text: "+"; font-size: Theme.type-caption.size; color: Theme.ink-faint; vertical-alignment: center; }
-
-                            Rectangle {
-                                background: Theme.chrome-bg;
-                                border-radius: 5px;
-                                border-width: 1px;
-                                border-color: Theme.line;
-                                height: 24px;
-                                HorizontalLayout {
-                                    padding-left: Theme.space-8; padding-right: Theme.space-8;
-                                    Text {
-                                        text: "Shift";
-                                        font-size: Theme.type-label.size;
-                                        font-weight: 600;
-                                        color: Theme.ink-primary;
-                                        font-family: Theme.font-mono;
-                                                        }
-                                }
-                            }
-
-                            Text { text: "+"; font-size: Theme.type-caption.size; color: Theme.ink-faint; vertical-alignment: center; }
-
-                            Rectangle {
-                                background: Theme.chrome-bg;
-                                border-radius: 5px;
-                                border-width: 1px;
-                                border-color: Theme.line;
-                                height: 24px;
-                                HorizontalLayout {
-                                    padding-left: Theme.space-12; padding-right: Theme.space-12;
-                                    Text {
-                                        text: "Space";
-                                        font-size: Theme.type-label.size;
-                                        font-weight: 600;
-                                        color: Theme.ink-primary;
-                                        font-family: Theme.font-mono;
-                                                        }
-                                }
+                            KeycapCombo {
+                                keys: root.trigger-primary-keys;
+                                fallback-display: root.trigger-primary-display;
+                                size: KeycapSize.md;
+                                centered: true;
                             }
                         }
 
@@ -1726,27 +1785,23 @@ export component StudioWindow inherits Window {
                                     }
                                 }
 
-                                // Toggle Switch
-                                Rectangle {
-                                    width: 50px;
-                                    height: 28px;
-                                    border-radius: 14px;
-                                    background: root.post-process-llm-enabled ? Theme.accent : Theme.chrome-bg;
-                                    border-width: 1px;
-                                    border-color: root.post-process-llm-enabled ? Theme.accent-deep : Theme.line-strong;
-
-                                    Rectangle {
-                                        x: root.post-process-llm-enabled ? 24px : 2px;
-                                        y: 2px;
-                                        width: 22px;
-                                        height: 22px;
-                                        border-radius: 11px;
-                                        background: Theme.white;
-                                    }
-
-                                    TouchArea {
-                                        clicked => {
+                                // Toggle Switch (slintcn SottoSwitch)
+                                VerticalLayout {
+                                    alignment: center;
+                                    smart_polish_switch := SottoSwitch {
+                                        checked: root.post-process-llm-enabled;
+                                        external-touch: true;
+                                        controlled: true;
+                                        hovered: smart_polish_touch.has-hover;
+                                        toggled => {
                                             root.toggle-post-process-llm();
+                                        }
+
+                                        smart_polish_touch := TouchArea {
+                                            mouse-cursor: pointer;
+                                            clicked => {
+                                                root.toggle-post-process-llm();
+                                            }
                                         }
                                     }
                                 }
@@ -2344,43 +2399,48 @@ export component StudioWindow inherits Window {
 
                                         Rectangle {
                                             horizontal-stretch: 1; border-radius: Theme.radius-sm;
-                                            background: root.active-state == 0 ? Theme.line : transparent;
+                                            background: root.active-state == 0 ? Theme.line : (st0.has-hover ? Theme.row-hover-bg : transparent);
                                             border-width: 1px;
                                             border-color: root.active-state == 0 ? Theme.line-strong : transparent;
+                                            animate background, border-color { duration: Theme.motion-snappy; }
                                             Text { width: parent.width; height: parent.height; text: "Idle"; font-size: Theme.type-label.size; font-weight: root.active-state == 0 ? 600 : 500; color: root.active-state == 0 ? Theme.ink-primary : Theme.ink-secondary; horizontal-alignment: center; vertical-alignment: center; }
-                                            TouchArea { clicked => { root.select-state(0); } }
+                                            st0 := TouchArea { mouse-cursor: pointer; clicked => { root.select-state(0); } }
                                         }
                                         Rectangle {
                                             horizontal-stretch: 1; border-radius: Theme.radius-sm;
-                                            background: root.active-state == 1 ? Theme.line : transparent;
+                                            background: root.active-state == 1 ? Theme.line : (st1.has-hover ? Theme.row-hover-bg : transparent);
                                             border-width: 1px;
                                             border-color: root.active-state == 1 ? Theme.line-strong : transparent;
+                                            animate background, border-color { duration: Theme.motion-snappy; }
                                             Text { width: parent.width; height: parent.height; text: "Listening"; font-size: Theme.type-label.size; font-weight: root.active-state == 1 ? 600 : 500; color: root.active-state == 1 ? Theme.ink-primary : Theme.ink-secondary; horizontal-alignment: center; vertical-alignment: center; }
-                                            TouchArea { clicked => { root.select-state(1); } }
+                                            st1 := TouchArea { mouse-cursor: pointer; clicked => { root.select-state(1); } }
                                         }
                                         Rectangle {
                                             horizontal-stretch: 1; border-radius: Theme.radius-sm;
-                                            background: root.active-state == 2 ? Theme.line : transparent;
+                                            background: root.active-state == 2 ? Theme.line : (st2.has-hover ? Theme.row-hover-bg : transparent);
                                             border-width: 1px;
                                             border-color: root.active-state == 2 ? Theme.line-strong : transparent;
+                                            animate background, border-color { duration: Theme.motion-snappy; }
                                             Text { width: parent.width; height: parent.height; text: "Transcribe"; font-size: Theme.type-label.size; font-weight: root.active-state == 2 ? 600 : 500; color: root.active-state == 2 ? Theme.ink-primary : Theme.ink-secondary; horizontal-alignment: center; vertical-alignment: center; }
-                                            TouchArea { clicked => { root.select-state(2); } }
+                                            st2 := TouchArea { mouse-cursor: pointer; clicked => { root.select-state(2); } }
                                         }
                                         Rectangle {
                                             horizontal-stretch: 1; border-radius: Theme.radius-sm;
-                                            background: root.active-state == 3 ? Theme.line : transparent;
+                                            background: root.active-state == 3 ? Theme.line : (st3.has-hover ? Theme.row-hover-bg : transparent);
                                             border-width: 1px;
                                             border-color: root.active-state == 3 ? Theme.line-strong : transparent;
+                                            animate background, border-color { duration: Theme.motion-snappy; }
                                             Text { width: parent.width; height: parent.height; text: "Success"; font-size: Theme.type-label.size; font-weight: root.active-state == 3 ? 600 : 500; color: root.active-state == 3 ? Theme.ink-primary : Theme.ink-secondary; horizontal-alignment: center; vertical-alignment: center; }
-                                            TouchArea { clicked => { root.select-state(3); } }
+                                            st3 := TouchArea { mouse-cursor: pointer; clicked => { root.select-state(3); } }
                                         }
                                         Rectangle {
                                             horizontal-stretch: 1; border-radius: Theme.radius-sm;
-                                            background: root.active-state == 4 ? Theme.line : transparent;
+                                            background: root.active-state == 4 ? Theme.line : (st4.has-hover ? Theme.row-hover-bg : transparent);
                                             border-width: 1px;
                                             border-color: root.active-state == 4 ? Theme.line-strong : transparent;
+                                            animate background, border-color { duration: Theme.motion-snappy; }
                                             Text { width: parent.width; height: parent.height; text: "Error"; font-size: Theme.type-label.size; font-weight: root.active-state == 4 ? 600 : 500; color: root.active-state == 4 ? Theme.ink-primary : Theme.ink-secondary; horizontal-alignment: center; vertical-alignment: center; }
-                                            TouchArea { clicked => { root.select-state(4); } }
+                                            st4 := TouchArea { mouse-cursor: pointer; clicked => { root.select-state(4); } }
                                         }
                                     }
                                 }
@@ -2409,27 +2469,30 @@ export component StudioWindow inherits Window {
 
                                         Rectangle {
                                             horizontal-stretch: 1; border-radius: Theme.radius-sm;
-                                            background: root.active-option() == 0 ? Theme.line : transparent;
+                                            background: root.active-option() == 0 ? Theme.line : (opt0.has-hover ? Theme.row-hover-bg : transparent);
                                             border-width: 1px;
                                             border-color: root.active-option() == 0 ? Theme.line-strong : transparent;
+                                            animate background, border-color { duration: Theme.motion-snappy; }
                                             Text { width: parent.width; height: parent.height; text: root.opt-a-label(); font-size: Theme.type-label.size; font-weight: root.active-option() == 0 ? 600 : 500; color: root.active-option() == 0 ? Theme.ink-primary : Theme.ink-secondary; horizontal-alignment: center; vertical-alignment: center; }
-                                            TouchArea { clicked => { root.select-option(0); } }
+                                            opt0 := TouchArea { mouse-cursor: pointer; clicked => { root.select-option(0); } }
                                         }
                                         Rectangle {
                                             horizontal-stretch: 1; border-radius: Theme.radius-sm;
-                                            background: root.active-option() == 1 ? Theme.line : transparent;
+                                            background: root.active-option() == 1 ? Theme.line : (opt1.has-hover ? Theme.row-hover-bg : transparent);
                                             border-width: 1px;
                                             border-color: root.active-option() == 1 ? Theme.line-strong : transparent;
+                                            animate background, border-color { duration: Theme.motion-snappy; }
                                             Text { width: parent.width; height: parent.height; text: root.opt-b-label(); font-size: Theme.type-label.size; font-weight: root.active-option() == 1 ? 600 : 500; color: root.active-option() == 1 ? Theme.ink-primary : Theme.ink-secondary; horizontal-alignment: center; vertical-alignment: center; }
-                                            TouchArea { clicked => { root.select-option(1); } }
+                                            opt1 := TouchArea { mouse-cursor: pointer; clicked => { root.select-option(1); } }
                                         }
                                         Rectangle {
                                             horizontal-stretch: 1; border-radius: Theme.radius-sm;
-                                            background: root.active-option() == 2 ? Theme.line : transparent;
+                                            background: root.active-option() == 2 ? Theme.line : (opt2.has-hover ? Theme.row-hover-bg : transparent);
                                             border-width: 1px;
                                             border-color: root.active-option() == 2 ? Theme.line-strong : transparent;
+                                            animate background, border-color { duration: Theme.motion-snappy; }
                                             Text { width: parent.width; height: parent.height; text: root.opt-c-label(); font-size: Theme.type-label.size; font-weight: root.active-option() == 2 ? 600 : 500; color: root.active-option() == 2 ? Theme.ink-primary : Theme.ink-secondary; horizontal-alignment: center; vertical-alignment: center; }
-                                            TouchArea { clicked => { root.select-option(2); } }
+                                            opt2 := TouchArea { mouse-cursor: pointer; clicked => { root.select-option(2); } }
                                         }
                                     }
                                 }
@@ -3073,251 +3136,143 @@ export component StudioWindow inherits Window {
                                 }
                             }
 
-                            // Primary slot row: binding display + record + reset, all inline.
-                            HorizontalLayout {
-                                spacing: Theme.space-8;
+                            // Primary slot row (Slot 0)
+                            ShortcutSlotCard {
+                                slot-label: "PRIMARY";
+                                keys: root.trigger-primary-keys;
+                                display: root.trigger-primary-display;
+                                armed: root.is-recording-key && root.recording-slot == 0;
+                                armed-text: "Press keys…";
 
                                 Rectangle {
-                                    horizontal-stretch: 1;
-                                    height: 44px;
+                                    width: 84px;
+                                    height: 34px;
                                     border-radius: Theme.radius-md;
-                                    background: Theme.chrome-bg;
+                                    background: root.is-recording-key && root.recording-slot == 0 ? Theme.rec-arm-bg : (rec_p_touch.has-hover ? Theme.line : Theme.chrome-bg);
                                     border-width: 1px;
-                                    border-color: root.is-recording-key && root.recording-slot == 0 ? Theme.accent : Theme.line;
-                                    animate border-color { duration: 120ms; }
+                                    border-color: root.is-recording-key && root.recording-slot == 0 ? Theme.accent : (rec_p_touch.has-hover ? Theme.line-strong : Theme.line);
+                                    animate background, border-color { duration: Theme.motion-snappy; }
 
-                                    HorizontalLayout {
-                                        padding-left: Theme.space-16;
-                                        padding-right: Theme.space-16;
-                                        spacing: Theme.space-12;
-                                        alignment: start;
-
-                                        VerticalLayout {
-                                            alignment: center;
-                                            Text {
-                                                text: "PRIMARY";
-                                                font-size: Theme.type-caption.size;
-                                                font-weight: 600;
-                                                color: Theme.ink-muted;
-                                                font-family: Theme.font-mono;
-                                                letter-spacing: 0.5px;
-                                                vertical-alignment: center;
-                                            }
+                                    VerticalLayout {
+                                        alignment: center;
+                                        Text {
+                                            text: root.is-recording-key && root.recording-slot == 0 ? "Cancel" : "Record";
+                                            font-size: Theme.type-label.size;
+                                            font-weight: 500;
+                                            color: root.is-recording-key && root.recording-slot == 0 ? Theme.accent : Theme.ink-primary;
+                                            horizontal-alignment: center;
+                                            vertical-alignment: center;
                                         }
+                                    }
 
-                                        VerticalLayout {
-                                            alignment: center;
-                                            Rectangle {
-                                                height: 26px;
-                                                border-radius: Theme.radius-sm;
-                                                background: Theme.line;
-                                                border-width: 1px;
-                                                border-color: Theme.line-strong;
-                                                HorizontalLayout {
-                                                    padding-left: Theme.space-12;
-                                                    padding-right: Theme.space-12;
-                                                    Text {
-                                                        text: root.trigger-primary-display;
-                                                        font-size: Theme.type-label.size;
-                                                        font-weight: 600;
-                                                        color: Theme.ink-primary;
-                                                        font-family: Theme.font-mono;
-                                                        vertical-alignment: center;
-                                                    }
-                                                }
+                                    rec_p_touch := TouchArea {
+                                        mouse-cursor: pointer;
+                                        clicked => {
+                                            if (root.is-recording-key && root.recording-slot == 0) {
+                                                root.stop-recording-key();
+                                            } else {
+                                                root.start-recording-key(0);
                                             }
                                         }
                                     }
                                 }
 
-                                VerticalLayout {
-                                    alignment: center;
-                                    Rectangle {
-                                        width: 112px;
-                                        height: 44px;
-                                        border-radius: Theme.radius-md;
-                                        background: root.is-recording-key && root.recording-slot == 0 ? Theme.rec-arm-alt : (rec_p_touch.has-hover ? Theme.line : Theme.chrome-bg);
-                                        border-width: 1px;
-                                        border-color: root.is-recording-key && root.recording-slot == 0 ? Theme.accent : (rec_p_touch.has-hover ? Theme.line-strong : Theme.line);
-                                        animate background { duration: 120ms; }
-                                        animate border-color { duration: 120ms; }
+                                Rectangle {
+                                    width: 98px;
+                                    height: 34px;
+                                    border-radius: Theme.radius-md;
+                                    background: reset_p_touch.has-hover ? Theme.line : Theme.chrome-bg;
+                                    border-width: 1px;
+                                    border-color: reset_p_touch.has-hover ? Theme.line-strong : Theme.line;
+                                    animate background, border-color { duration: Theme.motion-snappy; }
 
-                                        VerticalLayout {
-                                            alignment: center;
-                                            Text {
-                                                text: root.is-recording-key && root.recording-slot == 0 ? "Cancel" : "Record";
-                                                font-size: Theme.type-label.size;
-                                                font-weight: 500;
-                                                color: root.is-recording-key && root.recording-slot == 0 ? Theme.accent : Theme.ink-primary;
-                                                horizontal-alignment: center;
-                                                vertical-alignment: center;
-                                            }
-                                        }
-
-                                        rec_p_touch := TouchArea {
-                                            clicked => {
-                                                if (root.is-recording-key && root.recording-slot == 0) {
-                                                    root.stop-recording-key();
-                                                } else {
-                                                    root.start-recording-key(0);
-                                                }
-                                            }
+                                    VerticalLayout {
+                                        alignment: center;
+                                        Text {
+                                            text: "Reset to F8";
+                                            font-size: Theme.type-label.size;
+                                            font-weight: 500;
+                                            color: reset_p_touch.has-hover ? Theme.ink-primary : Theme.ink-secondary;
+                                            horizontal-alignment: center;
+                                            vertical-alignment: center;
                                         }
                                     }
-                                }
 
-                                VerticalLayout {
-                                    alignment: center;
-                                    Rectangle {
-                                        width: 112px;
-                                        height: 44px;
-                                        border-radius: Theme.radius-md;
-                                        background: reset_p_touch.has-hover ? Theme.line : Theme.chrome-bg;
-                                        border-width: 1px;
-                                        border-color: reset_p_touch.has-hover ? Theme.line-strong : Theme.line;
-                                        animate background { duration: 120ms; }
-
-                                        VerticalLayout {
-                                            alignment: center;
-                                            Text {
-                                                text: "Reset to F8";
-                                                font-size: Theme.type-label.size;
-                                                font-weight: 500;
-                                                color: reset_p_touch.has-hover ? Theme.ink-primary : Theme.ink-secondary;
-                                                horizontal-alignment: center;
-                                                vertical-alignment: center;
-                                            }
-                                        }
-
-                                        reset_p_touch := TouchArea {
-                                            clicked => {
-                                                root.reset-trigger(0);
-                                            }
+                                    reset_p_touch := TouchArea {
+                                        mouse-cursor: pointer;
+                                        clicked => {
+                                            root.reset-trigger(0);
                                         }
                                     }
                                 }
                             }
 
-                            // Secondary slot row: same inline pattern (Clear empties it).
-                            HorizontalLayout {
-                                spacing: Theme.space-8;
+                            // Secondary slot row (Slot 1)
+                            ShortcutSlotCard {
+                                slot-label: "SECONDARY";
+                                keys: root.trigger-secondary-keys;
+                                display: root.trigger-secondary-display;
+                                armed: root.is-recording-key && root.recording-slot == 1;
+                                armed-text: "Press keys…";
 
                                 Rectangle {
-                                    horizontal-stretch: 1;
-                                    height: 44px;
+                                    width: 84px;
+                                    height: 34px;
                                     border-radius: Theme.radius-md;
-                                    background: Theme.chrome-bg;
+                                    background: root.is-recording-key && root.recording-slot == 1 ? Theme.rec-arm-bg : (rec_s_touch.has-hover ? Theme.line : Theme.chrome-bg);
                                     border-width: 1px;
-                                    border-color: root.is-recording-key && root.recording-slot == 1 ? Theme.accent : Theme.line;
-                                    animate border-color { duration: 120ms; }
+                                    border-color: root.is-recording-key && root.recording-slot == 1 ? Theme.accent : (rec_s_touch.has-hover ? Theme.line-strong : Theme.line);
+                                    animate background, border-color { duration: Theme.motion-snappy; }
 
-                                    HorizontalLayout {
-                                        padding-left: Theme.space-16;
-                                        padding-right: Theme.space-16;
-                                        spacing: Theme.space-12;
-                                        alignment: start;
-
-                                        VerticalLayout {
-                                            alignment: center;
-                                            Text {
-                                                text: "SECONDARY";
-                                                font-size: Theme.type-caption.size;
-                                                font-weight: 600;
-                                                color: Theme.ink-muted;
-                                                font-family: Theme.font-mono;
-                                                letter-spacing: 0.5px;
-                                                vertical-alignment: center;
-                                            }
+                                    VerticalLayout {
+                                        alignment: center;
+                                        Text {
+                                            text: root.is-recording-key && root.recording-slot == 1 ? "Cancel" : "Record";
+                                            font-size: Theme.type-label.size;
+                                            font-weight: 500;
+                                            color: root.is-recording-key && root.recording-slot == 1 ? Theme.accent : Theme.ink-primary;
+                                            horizontal-alignment: center;
+                                            vertical-alignment: center;
                                         }
+                                    }
 
-                                        VerticalLayout {
-                                            alignment: center;
-                                            Rectangle {
-                                                height: 26px;
-                                                border-radius: Theme.radius-sm;
-                                                background: Theme.line;
-                                                border-width: 1px;
-                                                border-color: Theme.line-strong;
-                                                HorizontalLayout {
-                                                    padding-left: Theme.space-12;
-                                                    padding-right: Theme.space-12;
-                                                    Text {
-                                                        text: root.trigger-secondary-display;
-                                                        font-size: Theme.type-label.size;
-                                                        font-weight: 600;
-                                                        color: Theme.ink-primary;
-                                                        font-family: Theme.font-mono;
-                                                        vertical-alignment: center;
-                                                    }
-                                                }
+                                    rec_s_touch := TouchArea {
+                                        mouse-cursor: pointer;
+                                        clicked => {
+                                            if (root.is-recording-key && root.recording-slot == 1) {
+                                                root.stop-recording-key();
+                                            } else {
+                                                root.start-recording-key(1);
                                             }
                                         }
                                     }
                                 }
 
-                                VerticalLayout {
-                                    alignment: center;
-                                    Rectangle {
-                                        width: 112px;
-                                        height: 44px;
-                                        border-radius: Theme.radius-md;
-                                        background: root.is-recording-key && root.recording-slot == 1 ? Theme.rec-arm-alt : (rec_s_touch.has-hover ? Theme.line : Theme.chrome-bg);
-                                        border-width: 1px;
-                                        border-color: root.is-recording-key && root.recording-slot == 1 ? Theme.accent : (rec_s_touch.has-hover ? Theme.line-strong : Theme.line);
-                                        animate background { duration: 120ms; }
-                                        animate border-color { duration: 120ms; }
+                                Rectangle {
+                                    width: 98px;
+                                    height: 34px;
+                                    border-radius: Theme.radius-md;
+                                    background: clear_s_touch.has-hover ? Theme.line : Theme.chrome-bg;
+                                    border-width: 1px;
+                                    border-color: clear_s_touch.has-hover ? Theme.line-strong : Theme.line;
+                                    animate background, border-color { duration: Theme.motion-snappy; }
 
-                                        VerticalLayout {
-                                            alignment: center;
-                                            Text {
-                                                text: root.is-recording-key && root.recording-slot == 1 ? "Cancel" : "Record";
-                                                font-size: Theme.type-label.size;
-                                                font-weight: 500;
-                                                color: root.is-recording-key && root.recording-slot == 1 ? Theme.accent : Theme.ink-primary;
-                                                horizontal-alignment: center;
-                                                vertical-alignment: center;
-                                            }
-                                        }
-
-                                        rec_s_touch := TouchArea {
-                                            clicked => {
-                                                if (root.is-recording-key && root.recording-slot == 1) {
-                                                    root.stop-recording-key();
-                                                } else {
-                                                    root.start-recording-key(1);
-                                                }
-                                            }
+                                    VerticalLayout {
+                                        alignment: center;
+                                        Text {
+                                            text: "Clear";
+                                            font-size: Theme.type-label.size;
+                                            font-weight: 500;
+                                            color: clear_s_touch.has-hover ? Theme.ink-primary : Theme.ink-secondary;
+                                            horizontal-alignment: center;
+                                            vertical-alignment: center;
                                         }
                                     }
-                                }
 
-                                VerticalLayout {
-                                    alignment: center;
-                                    Rectangle {
-                                        width: 112px;
-                                        height: 44px;
-                                        border-radius: Theme.radius-md;
-                                        background: clear_s_touch.has-hover ? Theme.line : Theme.chrome-bg;
-                                        border-width: 1px;
-                                        border-color: clear_s_touch.has-hover ? Theme.line-strong : Theme.line;
-                                        animate background { duration: 120ms; }
-
-                                        VerticalLayout {
-                                            alignment: center;
-                                            Text {
-                                                text: "Clear";
-                                                font-size: Theme.type-label.size;
-                                                font-weight: 500;
-                                                color: clear_s_touch.has-hover ? Theme.ink-primary : Theme.ink-secondary;
-                                                horizontal-alignment: center;
-                                                vertical-alignment: center;
-                                            }
-                                        }
-
-                                        clear_s_touch := TouchArea {
-                                            clicked => {
-                                                root.reset-trigger(1);
-                                            }
+                                    clear_s_touch := TouchArea {
+                                        mouse-cursor: pointer;
+                                        clicked => {
+                                            root.reset-trigger(1);
                                         }
                                     }
                                 }
@@ -3416,250 +3371,142 @@ export component StudioWindow inherits Window {
                             }
 
                             // Primary cancel slot row (Slot 2)
-                            HorizontalLayout {
-                                spacing: Theme.space-8;
+                            ShortcutSlotCard {
+                                slot-label: "PRIMARY CANCEL";
+                                keys: root.cancel-primary-keys;
+                                display: root.cancel-primary-display;
+                                armed: root.is-recording-key && root.recording-slot == 2;
+                                armed-text: "Press keys…";
 
                                 Rectangle {
-                                    horizontal-stretch: 1;
-                                    height: 44px;
+                                    width: 84px;
+                                    height: 34px;
                                     border-radius: Theme.radius-md;
-                                    background: Theme.chrome-bg;
+                                    background: root.is-recording-key && root.recording-slot == 2 ? Theme.rec-arm-bg : (rec_cp_touch.has-hover ? Theme.line : Theme.chrome-bg);
                                     border-width: 1px;
-                                    border-color: root.is-recording-key && root.recording-slot == 2 ? Theme.accent : Theme.line;
-                                    animate border-color { duration: 120ms; }
+                                    border-color: root.is-recording-key && root.recording-slot == 2 ? Theme.accent : (rec_cp_touch.has-hover ? Theme.line-strong : Theme.line);
+                                    animate background, border-color { duration: Theme.motion-snappy; }
 
-                                    HorizontalLayout {
-                                        padding-left: Theme.space-16;
-                                        padding-right: Theme.space-16;
-                                        spacing: Theme.space-12;
-                                        alignment: start;
-
-                                        VerticalLayout {
-                                            alignment: center;
-                                            Text {
-                                                text: "PRIMARY CANCEL";
-                                                font-size: Theme.type-caption.size;
-                                                font-weight: 600;
-                                                color: Theme.ink-muted;
-                                                font-family: Theme.font-mono;
-                                                letter-spacing: 0.5px;
-                                                vertical-alignment: center;
-                                            }
+                                    VerticalLayout {
+                                        alignment: center;
+                                        Text {
+                                            text: root.is-recording-key && root.recording-slot == 2 ? "Cancel" : "Record";
+                                            font-size: Theme.type-label.size;
+                                            font-weight: 500;
+                                            color: root.is-recording-key && root.recording-slot == 2 ? Theme.accent : Theme.ink-primary;
+                                            horizontal-alignment: center;
+                                            vertical-alignment: center;
                                         }
+                                    }
 
-                                        VerticalLayout {
-                                            alignment: center;
-                                            Rectangle {
-                                                height: 26px;
-                                                border-radius: Theme.radius-sm;
-                                                background: Theme.line;
-                                                border-width: 1px;
-                                                border-color: Theme.line-strong;
-                                                HorizontalLayout {
-                                                    padding-left: Theme.space-12;
-                                                    padding-right: Theme.space-12;
-                                                    Text {
-                                                        text: root.cancel-primary-display;
-                                                        font-size: Theme.type-label.size;
-                                                        font-weight: 600;
-                                                        color: Theme.ink-primary;
-                                                        font-family: Theme.font-mono;
-                                                        vertical-alignment: center;
-                                                    }
-                                                }
+                                    rec_cp_touch := TouchArea {
+                                        mouse-cursor: pointer;
+                                        clicked => {
+                                            if (root.is-recording-key && root.recording-slot == 2) {
+                                                root.stop-recording-key();
+                                            } else {
+                                                root.start-recording-key(2);
                                             }
                                         }
                                     }
                                 }
 
-                                VerticalLayout {
-                                    alignment: center;
-                                    Rectangle {
-                                        width: 112px;
-                                        height: 44px;
-                                        border-radius: Theme.radius-md;
-                                        background: root.is-recording-key && root.recording-slot == 2 ? Theme.rec-arm-alt : (rec_cp_touch.has-hover ? Theme.line : Theme.chrome-bg);
-                                        border-width: 1px;
-                                        border-color: root.is-recording-key && root.recording-slot == 2 ? Theme.accent : (rec_cp_touch.has-hover ? Theme.line-strong : Theme.line);
-                                        animate background { duration: 120ms; }
-                                        animate border-color { duration: 120ms; }
+                                Rectangle {
+                                    width: 98px;
+                                    height: 34px;
+                                    border-radius: Theme.radius-md;
+                                    background: reset_cp_touch.has-hover ? Theme.line : Theme.chrome-bg;
+                                    border-width: 1px;
+                                    border-color: reset_cp_touch.has-hover ? Theme.line-strong : Theme.line;
+                                    animate background, border-color { duration: Theme.motion-snappy; }
 
-                                        VerticalLayout {
-                                            alignment: center;
-                                            Text {
-                                                text: root.is-recording-key && root.recording-slot == 2 ? "Cancel" : "Record";
-                                                font-size: Theme.type-label.size;
-                                                font-weight: 500;
-                                                color: root.is-recording-key && root.recording-slot == 2 ? Theme.accent : Theme.ink-primary;
-                                                horizontal-alignment: center;
-                                                vertical-alignment: center;
-                                            }
-                                        }
-
-                                        rec_cp_touch := TouchArea {
-                                            clicked => {
-                                                if (root.is-recording-key && root.recording-slot == 2) {
-                                                    root.stop-recording-key();
-                                                } else {
-                                                    root.start-recording-key(2);
-                                                }
-                                            }
+                                    VerticalLayout {
+                                        alignment: center;
+                                        Text {
+                                            text: "Reset to Esc";
+                                            font-size: Theme.type-label.size;
+                                            font-weight: 500;
+                                            color: reset_cp_touch.has-hover ? Theme.ink-primary : Theme.ink-secondary;
+                                            horizontal-alignment: center;
+                                            vertical-alignment: center;
                                         }
                                     }
-                                }
 
-                                VerticalLayout {
-                                    alignment: center;
-                                    Rectangle {
-                                        width: 112px;
-                                        height: 44px;
-                                        border-radius: Theme.radius-md;
-                                        background: reset_cp_touch.has-hover ? Theme.line : Theme.chrome-bg;
-                                        border-width: 1px;
-                                        border-color: reset_cp_touch.has-hover ? Theme.line-strong : Theme.line;
-                                        animate background { duration: 120ms; }
-
-                                        VerticalLayout {
-                                            alignment: center;
-                                            Text {
-                                                text: "Reset to Esc";
-                                                font-size: Theme.type-label.size;
-                                                font-weight: 500;
-                                                color: reset_cp_touch.has-hover ? Theme.ink-primary : Theme.ink-secondary;
-                                                horizontal-alignment: center;
-                                                vertical-alignment: center;
-                                            }
-                                        }
-
-                                        reset_cp_touch := TouchArea {
-                                            clicked => {
-                                                root.reset-trigger(2);
-                                            }
+                                    reset_cp_touch := TouchArea {
+                                        mouse-cursor: pointer;
+                                        clicked => {
+                                            root.reset-trigger(2);
                                         }
                                     }
                                 }
                             }
 
                             // Secondary cancel slot row (Slot 3)
-                            HorizontalLayout {
-                                spacing: Theme.space-8;
+                            ShortcutSlotCard {
+                                slot-label: "SECONDARY CANCEL";
+                                keys: root.cancel-secondary-keys;
+                                display: root.cancel-secondary-display;
+                                armed: root.is-recording-key && root.recording-slot == 3;
+                                armed-text: "Press keys…";
 
                                 Rectangle {
-                                    horizontal-stretch: 1;
-                                    height: 44px;
+                                    width: 84px;
+                                    height: 34px;
                                     border-radius: Theme.radius-md;
-                                    background: Theme.chrome-bg;
+                                    background: root.is-recording-key && root.recording-slot == 3 ? Theme.rec-arm-bg : (rec_cs_touch.has-hover ? Theme.line : Theme.chrome-bg);
                                     border-width: 1px;
-                                    border-color: root.is-recording-key && root.recording-slot == 3 ? Theme.accent : Theme.line;
-                                    animate border-color { duration: 120ms; }
+                                    border-color: root.is-recording-key && root.recording-slot == 3 ? Theme.accent : (rec_cs_touch.has-hover ? Theme.line-strong : Theme.line);
+                                    animate background, border-color { duration: Theme.motion-snappy; }
 
-                                    HorizontalLayout {
-                                        padding-left: Theme.space-16;
-                                        padding-right: Theme.space-16;
-                                        spacing: Theme.space-12;
-                                        alignment: start;
-
-                                        VerticalLayout {
-                                            alignment: center;
-                                            Text {
-                                                text: "SECONDARY CANCEL";
-                                                font-size: Theme.type-caption.size;
-                                                font-weight: 600;
-                                                color: Theme.ink-muted;
-                                                font-family: Theme.font-mono;
-                                                letter-spacing: 0.5px;
-                                                vertical-alignment: center;
-                                            }
+                                    VerticalLayout {
+                                        alignment: center;
+                                        Text {
+                                            text: root.is-recording-key && root.recording-slot == 3 ? "Cancel" : "Record";
+                                            font-size: Theme.type-label.size;
+                                            font-weight: 500;
+                                            color: root.is-recording-key && root.recording-slot == 3 ? Theme.accent : Theme.ink-primary;
+                                            horizontal-alignment: center;
+                                            vertical-alignment: center;
                                         }
+                                    }
 
-                                        VerticalLayout {
-                                            alignment: center;
-                                            Rectangle {
-                                                height: 26px;
-                                                border-radius: Theme.radius-sm;
-                                                background: Theme.line;
-                                                border-width: 1px;
-                                                border-color: Theme.line-strong;
-                                                HorizontalLayout {
-                                                    padding-left: Theme.space-12;
-                                                    padding-right: Theme.space-12;
-                                                    Text {
-                                                        text: root.cancel-secondary-display;
-                                                        font-size: Theme.type-label.size;
-                                                        font-weight: 600;
-                                                        color: Theme.ink-primary;
-                                                        font-family: Theme.font-mono;
-                                                        vertical-alignment: center;
-                                                    }
-                                                }
+                                    rec_cs_touch := TouchArea {
+                                        mouse-cursor: pointer;
+                                        clicked => {
+                                            if (root.is-recording-key && root.recording-slot == 3) {
+                                                root.stop-recording-key();
+                                            } else {
+                                                root.start-recording-key(3);
                                             }
                                         }
                                     }
                                 }
 
-                                VerticalLayout {
-                                    alignment: center;
-                                    Rectangle {
-                                        width: 112px;
-                                        height: 44px;
-                                        border-radius: Theme.radius-md;
-                                        background: root.is-recording-key && root.recording-slot == 3 ? Theme.rec-arm-alt : (rec_cs_touch.has-hover ? Theme.line : Theme.chrome-bg);
-                                        border-width: 1px;
-                                        border-color: root.is-recording-key && root.recording-slot == 3 ? Theme.accent : (rec_cs_touch.has-hover ? Theme.line-strong : Theme.line);
-                                        animate background { duration: 120ms; }
-                                        animate border-color { duration: 120ms; }
+                                Rectangle {
+                                    width: 98px;
+                                    height: 34px;
+                                    border-radius: Theme.radius-md;
+                                    background: clear_cs_touch.has-hover ? Theme.line : Theme.chrome-bg;
+                                    border-width: 1px;
+                                    border-color: clear_cs_touch.has-hover ? Theme.line-strong : Theme.line;
+                                    animate background, border-color { duration: Theme.motion-snappy; }
 
-                                        VerticalLayout {
-                                            alignment: center;
-                                            Text {
-                                                text: root.is-recording-key && root.recording-slot == 3 ? "Cancel" : "Record";
-                                                font-size: Theme.type-label.size;
-                                                font-weight: 500;
-                                                color: root.is-recording-key && root.recording-slot == 3 ? Theme.accent : Theme.ink-primary;
-                                                horizontal-alignment: center;
-                                                vertical-alignment: center;
-                                            }
-                                        }
-
-                                        rec_cs_touch := TouchArea {
-                                            clicked => {
-                                                if (root.is-recording-key && root.recording-slot == 3) {
-                                                    root.stop-recording-key();
-                                                } else {
-                                                    root.start-recording-key(3);
-                                                }
-                                            }
+                                    VerticalLayout {
+                                        alignment: center;
+                                        Text {
+                                            text: "Clear";
+                                            font-size: Theme.type-label.size;
+                                            font-weight: 500;
+                                            color: clear_cs_touch.has-hover ? Theme.ink-primary : Theme.ink-secondary;
+                                            horizontal-alignment: center;
+                                            vertical-alignment: center;
                                         }
                                     }
-                                }
 
-                                VerticalLayout {
-                                    alignment: center;
-                                    Rectangle {
-                                        width: 112px;
-                                        height: 44px;
-                                        border-radius: Theme.radius-md;
-                                        background: clear_cs_touch.has-hover ? Theme.line : Theme.chrome-bg;
-                                        border-width: 1px;
-                                        border-color: clear_cs_touch.has-hover ? Theme.line-strong : Theme.line;
-                                        animate background { duration: 120ms; }
-
-                                        VerticalLayout {
-                                            alignment: center;
-                                            Text {
-                                                text: "Clear";
-                                                font-size: Theme.type-label.size;
-                                                font-weight: 500;
-                                                color: clear_cs_touch.has-hover ? Theme.ink-primary : Theme.ink-secondary;
-                                                horizontal-alignment: center;
-                                                vertical-alignment: center;
-                                            }
-                                        }
-
-                                        clear_cs_touch := TouchArea {
-                                            clicked => {
-                                                root.reset-trigger(3);
-                                            }
+                                    clear_cs_touch := TouchArea {
+                                        mouse-cursor: pointer;
+                                        clicked => {
+                                            root.reset-trigger(3);
                                         }
                                     }
                                 }
@@ -3722,53 +3569,25 @@ export component StudioWindow inherits Window {
                                 }
                             }
 
-                            // Launch on Startup Toggle Row
-                            HorizontalLayout {
-                                alignment: space-between;
+                            // Launch on Startup Toggle Row (slintcn StudioPreferenceRow + SottoSwitch)
+                            StudioPreferenceRow {
+                                title: "Launch on System Startup";
+                                description: "Automatically start Sotto in the system tray when signing in";
+                                row-hovered: startup_touch.has-hover;
 
-                                VerticalLayout {
-                                    alignment: center;
-                                    spacing: Theme.space-4;
-                                    horizontal-stretch: 1;
-
-                                    Text {
-                                        text: "Launch on System Startup";
-                                        font-size: Theme.type-body.size;
-                                        font-weight: 600;
-                                        color: Theme.ink-primary;
+                                startup_switch := SottoSwitch {
+                                    checked: root.launch-on-startup;
+                                    external-touch: true;
+                                    controlled: true;
+                                    hovered: startup_touch.has-hover;
+                                    toggled => {
+                                        root.toggle-launch-on-startup();
                                     }
-                                    Text {
-                                        text: "Automatically start Sotto in the system tray when signing in";
-                                        font-size: Theme.type-label.size;
-                                        font-weight: Theme.type-label.weight;
-                                        color: Theme.ink-secondary;
-                                    }
-                                }
 
-                                VerticalLayout {
-                                    alignment: center;
-
-                                    Rectangle {
-                                        width: 46px;
-                                        height: 26px;
-                                        border-radius: 13px;
-                                        background: root.launch-on-startup ? Theme.accent : Theme.line;
-                                        animate background { duration: 150ms; }
-
-                                        Rectangle {
-                                            x: root.launch-on-startup ? 23px : 3px;
-                                            y: 3px;
-                                            width: 20px;
-                                            height: 20px;
-                                            border-radius: 10px;
-                                            background: Theme.white;
-                                            animate x { duration: 150ms; easing: ease-out; }
-                                        }
-
-                                        startup_touch := TouchArea {
-                                            clicked => {
-                                                root.toggle-launch-on-startup();
-                                            }
+                                    startup_touch := TouchArea {
+                                        mouse-cursor: pointer;
+                                        clicked => {
+                                            root.toggle-launch-on-startup();
                                         }
                                     }
                                 }
@@ -3793,7 +3612,7 @@ export component StudioWindow inherits Window {
 
                         VerticalLayout {
                             padding: Theme.space-24;
-                            spacing: Theme.space-16;
+                            spacing: Theme.space-12;
 
                             HorizontalLayout {
                                 alignment: space-between;
@@ -3824,109 +3643,48 @@ export component StudioWindow inherits Window {
                             }
 
                             // Start / stop chimes
-                            HorizontalLayout {
-                                alignment: space-between;
+                            StudioPreferenceRow {
+                                title: "Start & Stop Chimes";
+                                description: "Soft harmonic rising fifth (G4 → C5) on start, falling when stopped";
+                                row-hovered: chimes_touch.has-hover;
 
-                                VerticalLayout {
-                                    alignment: center;
-                                    spacing: Theme.space-4;
-                                    horizontal-stretch: 1;
-
-                                    Text {
-                                        text: "Start & Stop Chimes";
-                                        font-size: Theme.type-body.size;
-                                        font-weight: 600;
-                                        color: Theme.ink-primary;
+                                chimes_switch := SottoSwitch {
+                                    checked: root.chimes-enabled;
+                                    external-touch: true;
+                                    controlled: true;
+                                    hovered: chimes_touch.has-hover;
+                                    toggled => {
+                                        root.toggle-chimes();
                                     }
-                                    Text {
-                                        text: "Soft harmonic rising fifth (G4 → C5) on start, falling when stopped";
-                                        font-size: Theme.type-label.size;
-                                        font-weight: Theme.type-label.weight;
-                                        color: Theme.ink-secondary;
-                                    }
-                                }
 
-                                VerticalLayout {
-                                    alignment: center;
-
-                                    Rectangle {
-                                        width: 46px;
-                                        height: 26px;
-                                        border-radius: 13px;
-                                        background: root.chimes-enabled ? Theme.accent : Theme.line;
-                                        animate background { duration: 150ms; }
-
-                                        Rectangle {
-                                            x: root.chimes-enabled ? 23px : 3px;
-                                            y: 3px;
-                                            width: 20px;
-                                            height: 20px;
-                                            border-radius: 10px;
-                                            background: Theme.white;
-                                            animate x { duration: 150ms; easing: ease-out; }
-                                        }
-
-                                        chimes_touch := TouchArea {
-                                            clicked => {
-                                                root.toggle-chimes();
-                                            }
+                                    chimes_touch := TouchArea {
+                                        mouse-cursor: pointer;
+                                        clicked => {
+                                            root.toggle-chimes();
                                         }
                                     }
                                 }
-                            }
-
-                            Rectangle {
-                                height: 1px;
-                                background: Theme.line;
                             }
 
                             // Media pause / resume
-                            HorizontalLayout {
-                                alignment: space-between;
+                            StudioPreferenceRow {
+                                title: "Pause Media While Dictating";
+                                description: "Pauses non-call playback for the take and resumes after text is injected";
+                                row-hovered: media_pause_touch.has-hover;
 
-                                VerticalLayout {
-                                    alignment: center;
-                                    spacing: Theme.space-4;
-                                    horizontal-stretch: 1;
-
-                                    Text {
-                                        text: "Pause Media While Dictating";
-                                        font-size: Theme.type-body.size;
-                                        font-weight: 600;
-                                        color: Theme.ink-primary;
+                                media_pause_switch := SottoSwitch {
+                                    checked: root.media-pause-enabled;
+                                    external-touch: true;
+                                    controlled: true;
+                                    hovered: media_pause_touch.has-hover;
+                                    toggled => {
+                                        root.toggle-media-pause();
                                     }
-                                    Text {
-                                        text: "Pauses non-call playback for the take and resumes after text is injected";
-                                        font-size: Theme.type-label.size;
-                                        font-weight: Theme.type-label.weight;
-                                        color: Theme.ink-secondary;
-                                    }
-                                }
 
-                                VerticalLayout {
-                                    alignment: center;
-
-                                    Rectangle {
-                                        width: 46px;
-                                        height: 26px;
-                                        border-radius: 13px;
-                                        background: root.media-pause-enabled ? Theme.accent : Theme.line;
-                                        animate background { duration: 150ms; }
-
-                                        Rectangle {
-                                            x: root.media-pause-enabled ? 23px : 3px;
-                                            y: 3px;
-                                            width: 20px;
-                                            height: 20px;
-                                            border-radius: 10px;
-                                            background: Theme.white;
-                                            animate x { duration: 150ms; easing: ease-out; }
-                                        }
-
-                                        media_pause_touch := TouchArea {
-                                            clicked => {
-                                                root.toggle-media-pause();
-                                            }
+                                    media_pause_touch := TouchArea {
+                                        mouse-cursor: pointer;
+                                        clicked => {
+                                            root.toggle-media-pause();
                                         }
                                     }
                                 }

@@ -1,0 +1,63 @@
+// Copyright (c) 2026 Sotto
+// Multi-keycap shortcut chord group (e.g. [Ctrl] + [Shift] + [Space]) with
+// muted unassigned state and accent armed-recording prompt.
+import { Keycap, KeycapSize, KeycapTone } from "keycap.slint";
+import { Theme } from "theme.slint";
+
+export component KeycapCombo inherits HorizontalLayout {
+    in property <[string]> keys: [];
+    in property <string> fallback-display: "Not set";
+    in property <bool> armed: false;
+    in property <string> armed-text: "Press keys…";
+    in property <KeycapSize> size: KeycapSize.md;
+    in property <bool> centered: false;
+
+    alignment: root.centered ? center : start;
+    spacing: Theme.space-6;
+    height: root.size == KeycapSize.sm ? 22px : (root.size == KeycapSize.lg ? 32px : 28px);
+
+    if root.armed : VerticalLayout {
+        alignment: center;
+        Keycap {
+            text: root.armed-text;
+            size: root.size;
+            tone: KeycapTone.accent;
+        }
+    }
+
+    if !root.armed && root.keys.length > 0 : HorizontalLayout {
+        spacing: Theme.space-6;
+        for k[i] in root.keys : HorizontalLayout {
+            spacing: Theme.space-6;
+            if i > 0 : VerticalLayout {
+                alignment: center;
+                Text {
+                    text: "+";
+                    font-size: Theme.type-caption.size;
+                    font-weight: 600;
+                    color: Theme.ink-faint;
+                    vertical-alignment: center;
+                }
+            }
+            VerticalLayout {
+                alignment: center;
+                Keycap {
+                    text: k;
+                    size: root.size;
+                    tone: KeycapTone.neutral;
+                }
+            }
+        }
+    }
+
+    if !root.armed && root.keys.length == 0 : VerticalLayout {
+        alignment: center;
+        Keycap {
+            text: root.fallback-display == "" ? "Not set" : root.fallback-display;
+            size: root.size;
+            tone: root.fallback-display == "" || root.fallback-display == "Not set"
+                ? KeycapTone.muted
+                : KeycapTone.neutral;
+        }
+    }
+}

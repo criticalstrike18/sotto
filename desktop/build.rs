@@ -29,6 +29,9 @@ fn main() {
         "ui/components/model_row.slint",
         "ui/components/key_field.slint",
         "ui/components/history_card.slint",
+        "ui/components/switch.slint",
+        "ui/components/keycap.slint",
+        "ui/components/keycap_combo.slint",
     ] {
         slint_build::compile_with_config(component, config())
             .expect("Slint component compilation failed");

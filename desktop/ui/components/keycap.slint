@@ -1,0 +1,80 @@
+// Copyright (c) 2026 Sotto
+// slintcn-inspired tactile keyboard Keycap badge adapted to Sotto's Theme design system.
+// Supports sm/md/lg sizes and neutral/accent/muted/affirm/deny tones.
+import { Theme } from "theme.slint";
+
+export enum KeycapSize { sm, md, lg }
+export enum KeycapTone { neutral, accent, muted, affirm, deny }
+
+export component Keycap inherits Rectangle {
+    in property <string> text: "";
+    in property <KeycapSize> size: KeycapSize.md;
+    in property <KeycapTone> tone: KeycapTone.neutral;
+
+    out property <length> cap-h: self.height;
+    out property <length> cap-w: self.width;
+    out property <length> face-h: face.height;
+
+    property <bool> is-muted: root.tone == KeycapTone.muted;
+
+    height: root.size == KeycapSize.sm ? 22px : (root.size == KeycapSize.lg ? 32px : 28px);
+    width: max(
+        self.height,
+        cap-label.preferred-width + (root.size == KeycapSize.sm ? Theme.space-12 : Theme.space-16)
+    );
+    border-radius: Theme.keycap-radius;
+
+    // Outer bottom-skirt shell creates a crisp 2px mechanical key depth for bound keys.
+    background: root.is-muted
+        ? Theme.keycap-muted-bg
+        : (root.tone == KeycapTone.accent ? Theme.rec-arm-alt : Theme.keycap-shadow);
+    border-width: 1px;
+    border-color: root.tone == KeycapTone.accent ? Theme.accent :
+                  root.tone == KeycapTone.affirm ? Theme.success-dim :
+                  root.tone == KeycapTone.deny   ? Theme.danger :
+                  root.is-muted                  ? Theme.keycap-muted-border :
+                  Theme.keycap-edge;
+
+    animate background, border-color {
+        duration: Theme.motion-snappy;
+    }
+
+    face := Rectangle {
+        x: 1px;
+        y: 1px;
+        width: parent.width - 2px;
+        height: root.is-muted ? parent.height - 2px : max(0px, parent.height - 4px);
+        border-radius: Theme.radius-sm;
+        background: root.tone == KeycapTone.accent ? Theme.rec-arm-bg :
+                    root.tone == KeycapTone.affirm ? Theme.rec-idle-bg :
+                    root.tone == KeycapTone.deny   ? Theme.danger-hover :
+                    root.is-muted                  ? Theme.keycap-muted-bg :
+                    Theme.keycap-top;
+
+        if !root.is-muted : Rectangle {
+            x: 2px;
+            y: 0px;
+            width: max(0px, parent.width - 4px);
+            height: 1px;
+            background: Theme.white;
+            opacity: root.tone == KeycapTone.accent ? 0.16 : 0.08;
+        }
+
+        cap-label := Text {
+            x: (parent.width - self.preferred-width) / 2;
+            y: (parent.height - self.preferred-height) / 2;
+            text: root.text;
+            font-size: root.size == KeycapSize.sm ? Theme.type-caption.size :
+                       root.size == KeycapSize.lg ? Theme.type-title.size :
+                       Theme.type-label.size;
+            font-weight: root.is-muted ? 500 : 600;
+            font-family: root.is-muted ? Theme.font-sans : Theme.font-mono;
+            color: root.tone == KeycapTone.accent ? Theme.accent :
+                   root.tone == KeycapTone.affirm ? Theme.success :
+                   root.tone == KeycapTone.deny   ? Theme.danger-soft :
+                   root.is-muted                  ? Theme.ink-muted :
+                   Theme.ink-primary;
+        }
+    }
+}
+

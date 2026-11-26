@@ -77,11 +77,22 @@ export global Theme {
     out property <color> stage-ink: #353842;
     out property <color> stage-ide: #0f1013;
     out property <color> stage-slate: #1e2025;
+    out property <color> ring-muted: #38bdf84d;
+    out property <color> switch-track-off: #27272a;
+    out property <color> switch-track-hover: #323238;
+    out property <color> switch-border-off: #3f3f46;
+    out property <color> keycap-top: #232329;
+    out property <color> keycap-edge: #3f3f46;
+    out property <color> keycap-shadow: #09090b;
+    out property <color> keycap-muted-bg: #141418;
+    out property <color> keycap-muted-border: #27272a;
+    out property <color> row-hover-bg: #18181c;
 
-    // --- Standardized Spacing Scale (Micro 2/4/8/12 & Macro 16/24/32/48) ---
+    // --- Standardized Spacing Scale (Micro 2/4/6/8/12 & Macro 16/24/32/48) ---
     out property <length> space-0: 0px;
     out property <length> space-2: 2px;
     out property <length> space-4: 4px;
+    out property <length> space-6: 6px;
     out property <length> space-8: 8px;
     out property <length> space-12: 12px;
     out property <length> space-16: 16px;
@@ -89,12 +100,17 @@ export global Theme {
     out property <length> space-32: 32px;
     out property <length> space-48: 48px;
 
-    // --- Radii & Layout Bounds ---
+    // --- Radii, Motion & Layout Bounds ---
     out property <length> radius-sm: 4px;
+    out property <length> keycap-radius: 5px;
     out property <length> radius-md: 6px;
     out property <length> radius-lg: 8px;
+    out property <length> radius-xl: 12px;
     out property <length> radius-pill: 9999px;
     out property <length> studio-max-width: 1200px;
+    out property <duration> motion-snappy: 120ms;
+    out property <duration> motion-fast: 150ms;
+    out property <duration> motion-base: 200ms;
 
     // --- Type Families ---
     out property <string> font-mono: "Consolas";

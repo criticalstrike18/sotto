@@ -55,7 +55,7 @@ async fn click_in_flickable(
 async fn click_customization(studio: &StudioWindow, id: &str) {
     click_in_flickable(
         studio,
-        "StudioWindow::custom_container",
+        "StudioWindow::custom-container",
         studio.get_custom_content_height(),
         |s, y| s.set_custom_viewport_y(y),
         id,
@@ -100,6 +100,7 @@ fn test_all_click_paths() {
     let model_picked: Rc<RefCell<Option<(String, i32)>>> = Rc::new(RefCell::new(None));
     let prov_saved: Rc<RefCell<bool>> = Rc::new(RefCell::new(false));
     let prov_tested: Rc<RefCell<bool>> = Rc::new(RefCell::new(false));
+    let polish_toggled: Rc<RefCell<usize>> = Rc::new(RefCell::new(0));
 
     let trigger_modes: Rc<RefCell<Vec<i32>>> = Rc::new(RefCell::new(Vec::new()));
     let custom_toggles: Rc<RefCell<Vec<&'static str>>> = Rc::new(RefCell::new(Vec::new()));
@@ -128,6 +129,7 @@ fn test_all_click_paths() {
     let model_picked_c = Rc::clone(&model_picked);
     let prov_saved_c = Rc::clone(&prov_saved);
     let prov_tested_c = Rc::clone(&prov_tested);
+    let polish_toggled_c = Rc::clone(&polish_toggled);
 
     let trigger_modes_c = Rc::clone(&trigger_modes);
     let custom_toggles_c = Rc::clone(&custom_toggles);
@@ -270,6 +272,8 @@ fn test_all_click_paths() {
         studio.on_save_provider(move || *psv_c.borrow_mut() = true);
         let pts_c = Rc::clone(&prov_tested_c);
         studio.on_test_provider(move || *pts_c.borrow_mut() = true);
+        let polish_c = Rc::clone(&polish_toggled_c);
+        studio.on_toggle_post_process_llm(move || *polish_c.borrow_mut() += 1);
 
         let cards: Vec<_> =
             ElementHandle::find_by_element_id(&studio, "ProviderCard::card-touch").collect();
@@ -285,6 +289,7 @@ fn test_all_click_paths() {
         }
         click_providers(&studio, "StudioWindow::save-prov-touch").await;
         click_providers(&studio, "StudioWindow::test-prov-touch").await;
+        click_providers(&studio, "StudioWindow::smart_polish_touch").await;
 
         // Phase 8B: Live 2-column Other Languages dropdown selection clicks.
         studio.set_language_dropdown_open(true);
@@ -373,6 +378,7 @@ fn test_all_click_paths() {
     assert_eq!(*model_picked.borrow(), Some(("gemini".to_string(), 1)));
     assert!(*prov_saved.borrow(), "Save Providers button must invoke save_provider()");
     assert!(*prov_tested.borrow(), "Test Connection button must invoke test_provider()");
+    assert_eq!(*polish_toggled.borrow(), 1, "Smart Polish SottoSwitch must invoke toggle_post_process_llm()");
 
     assert_eq!(*stage_cycles.borrow(), 1, "Studio stage preview VoicePill click must fire cycle_state");
     assert_eq!(*trigger_modes.borrow(), vec![1, 0], "PTT then Toggle card clicks must fire set_trigger_mode(1), set_trigger_mode(0)");

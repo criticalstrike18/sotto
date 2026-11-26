@@ -1033,32 +1033,33 @@ fn complete_recording(mods: u32, key: Option<u32>, mouse: Option<i32>) {
     }
     println!("[Studio] {} trigger recorded: {}", label, binding.display());
     set_trigger_status(format!("{} set to {}", label, binding.display()));
-    let primary_disp = cfg.primary_trigger.display();
-    let secondary_disp = cfg
-        .secondary_trigger
-        .as_ref()
-        .map(|b| b.display())
-        .unwrap_or_else(|| "Not set".to_string());
-    let cancel_primary_disp = cfg
-        .primary_cancel_trigger
-        .as_ref()
-        .map(|b| b.display())
-        .unwrap_or_else(|| "Not set".to_string());
-    let cancel_secondary_disp = cfg
-        .secondary_cancel_trigger
-        .as_ref()
-        .map(|b| b.display())
-        .unwrap_or_else(|| "Not set".to_string());
+    let displays = app_logic::TriggerSlotDisplays::from_config(&cfg);
     let _ = slint::invoke_from_event_loop(move || {
         let _ = with_studio(|s| {
-            s.set_trigger_primary_display(primary_disp.into());
-            s.set_trigger_secondary_display(secondary_disp.into());
-            s.set_cancel_primary_display(cancel_primary_disp.into());
-            s.set_cancel_secondary_display(cancel_secondary_disp.into());
+            sync_studio_trigger_slots(s, &displays);
             s.set_is_recording_key(false);
             s.set_recording_slot(-1);
         });
     });
+}
+
+fn to_key_model(display: &str) -> slint::ModelRc<slint::SharedString> {
+    let keys: Vec<slint::SharedString> = app_logic::binding_keycaps(display)
+        .into_iter()
+        .map(Into::into)
+        .collect();
+    slint::ModelRc::from(std::rc::Rc::new(slint::VecModel::from(keys)))
+}
+
+fn sync_studio_trigger_slots(s: &StudioWindow, displays: &app_logic::TriggerSlotDisplays) {
+    s.set_trigger_primary_display(displays.primary.clone().into());
+    s.set_trigger_secondary_display(displays.secondary.clone().into());
+    s.set_cancel_primary_display(displays.cancel_primary.clone().into());
+    s.set_cancel_secondary_display(displays.cancel_secondary.clone().into());
+    s.set_trigger_primary_keys(to_key_model(&displays.primary));
+    s.set_trigger_secondary_keys(to_key_model(&displays.secondary));
+    s.set_cancel_primary_keys(to_key_model(&displays.cancel_primary));
+    s.set_cancel_secondary_keys(to_key_model(&displays.cancel_secondary));
 }
 
 /// Loads (api_key, selected_model) for a provider: SQLite store first, env fallback.
@@ -2072,28 +2073,8 @@ fn wire_studio_window(
         studio.set_capture_mode(cfg.capture_mode.as_i32());
         studio.set_chimes_enabled(cfg.chimes_enabled);
         studio.set_media_pause_enabled(cfg.media_pause_enabled);
-        studio.set_trigger_primary_display(cfg.primary_trigger.display().into());
-        studio.set_trigger_secondary_display(
-            cfg.secondary_trigger
-                .as_ref()
-                .map(|b| b.display())
-                .unwrap_or_else(|| "Not set".to_string())
-                .into(),
-        );
-        studio.set_cancel_primary_display(
-            cfg.primary_cancel_trigger
-                .as_ref()
-                .map(|b| b.display())
-                .unwrap_or_else(|| "Not set".to_string())
-                .into(),
-        );
-        studio.set_cancel_secondary_display(
-            cfg.secondary_cancel_trigger
-                .as_ref()
-                .map(|b| b.display())
-                .unwrap_or_else(|| "Not set".to_string())
-                .into(),
-        );
+        let init_displays = app_logic::TriggerSlotDisplays::from_config(&cfg);
+        sync_studio_trigger_slots(&studio, &init_displays);
         #[cfg(target_os = "windows")]
         studio.set_launch_on_startup(startup::is_startup_enabled());
         #[cfg(not(target_os = "windows"))]
@@ -2329,10 +2310,7 @@ fn wire_studio_window(
         if let Some(studio) = s_weak_reset.upgrade() {
             studio.set_is_recording_key(false);
             studio.set_recording_slot(-1);
-            studio.set_trigger_primary_display(displays.primary.into());
-            studio.set_trigger_secondary_display(displays.secondary.into());
-            studio.set_cancel_primary_display(displays.cancel_primary.into());
-            studio.set_cancel_secondary_display(displays.cancel_secondary.into());
+            sync_studio_trigger_slots(&studio, &displays);
             println!("[Studio] Trigger slot {} reset", slot);
             let _ = std::io::stdout().flush();
         }
@@ -3069,28 +3047,8 @@ fn toggle_studio_window(
                 s.set_capture_mode(cfg.capture_mode.as_i32());
                 s.set_chimes_enabled(cfg.chimes_enabled);
                 s.set_media_pause_enabled(cfg.media_pause_enabled);
-                s.set_trigger_primary_display(cfg.primary_trigger.display().into());
-                s.set_trigger_secondary_display(
-                    cfg.secondary_trigger
-                        .as_ref()
-                        .map(|b| b.display())
-                        .unwrap_or_else(|| "Not set".to_string())
-                        .into(),
-                );
-                s.set_cancel_primary_display(
-                    cfg.primary_cancel_trigger
-                        .as_ref()
-                        .map(|b| b.display())
-                        .unwrap_or_else(|| "Not set".to_string())
-                        .into(),
-                );
-                s.set_cancel_secondary_display(
-                    cfg.secondary_cancel_trigger
-                        .as_ref()
-                        .map(|b| b.display())
-                        .unwrap_or_else(|| "Not set".to_string())
-                        .into(),
-                );
+                let restore_displays = app_logic::TriggerSlotDisplays::from_config(&cfg);
+                sync_studio_trigger_slots(s, &restore_displays);
                 #[cfg(target_os = "windows")]
                 s.set_launch_on_startup(startup::is_startup_enabled());
                 #[cfg(not(target_os = "windows"))]
@@ -4411,23 +4369,42 @@ fn main() -> Result<(), slint::PlatformError> {
         let buf_cust = studio.window().take_snapshot()?;
         write_snap_bmp("studio_customization_snapshot.bmp", &buf_cust);
 
-        // 2. Take bottom snapshot of customization view (showing trigger controls and save preset)
+        // 2. Take mid & bottom snapshots of customization view (triggers, switches, save)
         let custom_h = studio.get_custom_content_height();
         let custom_vis = (buf_cust.height() as f32) - sotto_desktop::smooth_scroll::CONTENT_CHROME_RESERVED_PX;
         let max_scroll = (custom_h - custom_vis).max(0.0);
-        studio.set_custom_viewport_y(-max_scroll);
-        studio.set_custom_scroll_progress(1.0);
+        sync_studio_trigger_slots(
+            &studio,
+            &app_logic::TriggerSlotDisplays {
+                primary: "F8".to_string(),
+                secondary: "Ctrl + Shift + Space".to_string(),
+                cancel_primary: "Esc".to_string(),
+                cancel_secondary: "Not set".to_string(),
+            },
+        );
+
+        let mid_scroll = (max_scroll - 380.0).max(0.0);
+        studio.set_custom_viewport_y(-mid_scroll);
+        studio.set_custom_scroll_progress(if max_scroll > 0.0 { mid_scroll / max_scroll } else { 0.0 });
         studio.set_custom_is_scrolling(false);
         studio.set_custom_can_scroll(max_scroll > 0.0);
-        studio.set_trigger_primary_display("Ctrl".into());
-        let buffer_b = studio.window().take_snapshot()?;
-        write_snap_bmp("studio_customization_bottom.bmp", &buffer_b);
+        let buffer_mid = studio.window().take_snapshot()?;
+        write_snap_bmp("studio_customization_mid.bmp", &buffer_mid);
 
-        // 3. Take snapshot with key recording listening state
+        // 3. Take snapshot with key recording listening state on Activation slot 0
         studio.set_recording_slot(0);
         studio.set_is_recording_key(true);
         let buffer_picker = studio.window().take_snapshot()?;
         write_snap_bmp("studio_customization_picker.bmp", &buffer_picker);
+        studio.set_is_recording_key(false);
+        studio.set_recording_slot(-1);
+
+        studio.set_custom_viewport_y(-max_scroll);
+        studio.set_custom_scroll_progress(1.0);
+        studio.set_custom_is_scrolling(false);
+        studio.set_custom_can_scroll(max_scroll > 0.0);
+        let buffer_b = studio.window().take_snapshot()?;
+        write_snap_bmp("studio_customization_bottom.bmp", &buffer_b);
 
         // 4. Providers tab snapshot (logos, model radio lists, single key box)
         studio.set_provider_id("groq".into());

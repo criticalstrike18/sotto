@@ -28,6 +28,9 @@ pub mod components {
     component_module!(model_row_mod, "model_row.rs", ModelRow);
     component_module!(key_field_mod, "key_field.rs", KeyField);
     component_module!(history_card_mod, "history_card.rs", HistoryCard);
+    component_module!(switch_mod, "switch.rs", SottoSwitch);
+    component_module!(keycap_mod, "keycap.rs", Keycap, KeycapSize, KeycapTone);
+    component_module!(keycap_combo_mod, "keycap_combo.rs", KeycapCombo);
 }
 
 pub mod app_logic;

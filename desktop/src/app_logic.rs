@@ -169,3 +169,18 @@ impl CustomizationSnapshot {
         cfg.media_pause_enabled = self.media_pause_enabled;
     }
 }
+
+/// Splits a formatted shortcut label (`"Ctrl + Shift + Space"`, `"F8"`, `"Not set"`)
+/// into individual keycap labels for rendering `Keycap` components.
+pub fn binding_keycaps(display: &str) -> Vec<String> {
+    let trimmed = display.trim();
+    if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("Not set") {
+        return Vec::new();
+    }
+    trimmed
+        .split(" + ")
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+        .map(str::to_string)
+        .collect()
+}

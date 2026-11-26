@@ -1,0 +1,127 @@
+// Copyright (c) 2026 Sotto
+// slintcn-inspired animated toggle switch adapted to Sotto's Theme design system.
+// Uses cubic-bezier sliding knob transitions, 3px focus ring, and optional @children
+// TouchArea forwarding so production rows can preserve test element IDs.
+import { Theme } from "theme.slint";
+
+export component SottoSwitch inherits Rectangle {
+    in-out property <bool> checked: false;
+    in property <string> label: "";
+    in property <bool> disabled: false;
+    in property <bool> external-touch: false;
+    in property <bool> controlled: false;
+    in property <bool> hovered: false;
+
+    out property <length> track-w: track.width;
+    out property <length> track-h: track.height;
+    out property <length> knob-x: knob.x;
+    out property <length> knob-size: knob.width;
+    out property <bool> has-focus-ring: focus-scope.has-focus;
+
+    callback toggled(bool);
+
+    public function press() {
+        if (!root.disabled) {
+            if (!root.controlled) {
+                root.checked = !root.checked;
+                root.toggled(root.checked);
+            } else {
+                root.toggled(!root.checked);
+            }
+            focus-scope.focus();
+        }
+    }
+
+    public function focus-control() {
+        focus-scope.focus();
+    }
+
+    property <bool> is-hovered: root.hovered || internal-touch.has-hover;
+
+    width: root.label != "" ? content-row.preferred-width : track.width;
+    height: track.height;
+    background: transparent;
+    opacity: root.disabled ? 0.5 : 1.0;
+
+    content-row := HorizontalLayout {
+        spacing: Theme.space-8;
+        alignment: start;
+
+        VerticalLayout {
+            alignment: center;
+            track := Rectangle {
+                width: 44px;
+                height: 24px;
+                border-radius: Theme.radius-pill;
+                background: root.checked
+                    ? (root.is-hovered ? Theme.accent-soft : Theme.accent)
+                    : (root.is-hovered ? Theme.switch-track-hover : Theme.switch-track-off);
+                border-width: 1px;
+                border-color: root.checked
+                    ? Theme.accent-deep
+                    : (root.is-hovered ? Theme.line-strong : Theme.switch-border-off);
+
+                knob := Rectangle {
+                    width: 18px;
+                    height: 18px;
+                    y: (parent.height - self.height) / 2;
+                    x: root.checked ? parent.width - self.width - 3px : 3px;
+                    border-radius: Theme.radius-pill;
+                    background: root.checked ? Theme.white : Theme.ink-alt;
+                    drop-shadow-blur: 2px;
+                    drop-shadow-color: #00000033;
+
+                    animate x, background {
+                        duration: Theme.motion-fast;
+                        easing: cubic-bezier(0.4, 0.0, 0.2, 1.0);
+                    }
+                }
+
+                if !root.external-touch && focus-scope.has-focus : Rectangle {
+                    x: -3px;
+                    y: -3px;
+                    width: parent.width + 6px;
+                    height: parent.height + 6px;
+                    border-width: 2px;
+                    border-color: Theme.ring-muted;
+                    border-radius: Theme.radius-pill;
+                    background: transparent;
+                }
+
+                animate background, border-color {
+                    duration: Theme.motion-fast;
+                    easing: cubic-bezier(0.4, 0.0, 0.2, 1.0);
+                }
+            }
+        }
+
+        if root.label != "" : Text {
+            text: root.label;
+            color: root.disabled ? Theme.ink-muted : Theme.ink-primary;
+            font-size: Theme.type-body.size;
+            vertical-alignment: center;
+        }
+    }
+
+    internal-touch := TouchArea {
+        visible: !root.external-touch;
+        mouse-cursor: root.disabled ? default : pointer;
+        clicked => {
+            root.press();
+        }
+    }
+
+    @children
+
+    forward-focus: focus-scope;
+    focus-scope := FocusScope {
+        enabled: !root.disabled && !root.external-touch;
+        key-pressed(event) => {
+            if (event.text == " " || event.text == "\n") {
+                root.press();
+                return accept;
+            }
+            return reject;
+        }
+    }
+}
